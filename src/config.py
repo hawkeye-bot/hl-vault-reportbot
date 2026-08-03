@@ -1,0 +1,12 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+VAULT_ADDRESS = os.environ["VAULT_ADDRESS"]
+USER_ADDRESS = os.environ["USER_ADDRESS"]
+POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
+LIQUIDATION_WARN_THRESHOLD = float(os.getenv("LIQUIDATION_WARN_THRESHOLD", "0.1"))
+DAILY_SUMMARY_HOUR = int(os.getenv("DAILY_SUMMARY_HOUR", "8"))
