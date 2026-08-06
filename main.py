@@ -94,18 +94,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
             vault_value = _vault_value(margin)
             equity = _user_equity(client.get_vault_details())
             orders = client.get_open_orders()
-
-            # No resting sell order can mean the vault's trading bot is offline
-            has_sell_order = any(o.get("side") == "A" for o in orders)
-            if not has_sell_order and not state.no_sell_order_warned:
-                await notifier.send(
-                    "<b>No sell order found</b>\n"
-                    "The vault has no resting sell orders — the bot trading it "
-                    "may be offline."
-                )
-                state.no_sell_order_warned = True
-            elif has_sell_order:
-                state.no_sell_order_warned = False
+            positions = client.get_open_positions()
 
             # Liquidation warning
             margin_ratio_str = margin.get("marginRatio")
@@ -126,6 +115,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
             new_fills = client.get_fills_since(last_fill_time_ms)
             unseen = [f for f in new_fills if f.get("hash") not in state.seen_fill_hashes]
             unseen.sort(key=lambda f: f.get("time", 0))
+            sell_filled_this_cycle = any(f.get("side") == "A" for f in unseen)
             for group in group_fills_by_order(unseen):
                 for fill in group:
                     state.seen_fill_hashes.add(fill.get("hash"))
@@ -135,12 +125,30 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
             if unseen:
                 last_fill_time_ms = int(time.time() * 1000)
 
+            # No resting sell order while holding a position can mean the vault's
+            # trading bot is offline; skip right after a sell just filled, since
+            # the filled order is expected to be gone from the book that cycle
+            has_open_position = any(
+                float(ap.get("position", {}).get("szi", 0) or 0) != 0 for ap in positions
+            )
+            has_sell_order = any(o.get("side") == "A" for o in orders)
+            should_warn = has_open_position and not has_sell_order and not sell_filled_this_cycle
+            if should_warn and not state.no_sell_order_warned:
+                await notifier.send(
+                    "<b>No sell order found</b>\n"
+                    "The vault holds a position with no resting sell orders — "
+                    "the bot trading it may be offline."
+                )
+                state.no_sell_order_warned = True
+            elif not should_warn:
+                state.no_sell_order_warned = False
+
             # Heartbeat: prove we're still alive if nothing else has posted in a while
             silence = time.monotonic() - notifier.last_sent_at
             if silence >= HEARTBEAT_INTERVAL_SECONDS:
                 await notifier.send(
                     f"<b>Still online</b>\n"
-                    f"{format_position_status(client.get_open_positions(), vault_value, equity)}\n\n"
+                    f"{format_position_status(positions, vault_value, equity)}\n\n"
                     f"<b>Open orders</b>\n{format_open_orders(orders)}"
                 )
 
