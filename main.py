@@ -15,7 +15,12 @@ from src.config import (
 )
 from src.hl_client import HyperliquidClient
 from src.notifier import TelegramNotifier
-from src.state_tracker import VaultState, format_fill, format_position_status
+from src.state_tracker import (
+    VaultState,
+    format_fill,
+    format_position_status,
+    group_fills_by_order,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,13 +98,15 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
                 elif ratio >= LIQUIDATION_WARN_THRESHOLD:
                     state.liquidation_warned = False
 
-            # New fills, oldest first so a burst between polls posts in order
+            # New fills, oldest first so a burst between polls posts in order;
+            # partial fills of the same order are grouped into one message
             new_fills = client.get_fills_since(last_fill_time_ms)
             unseen = [f for f in new_fills if f.get("hash") not in state.seen_fill_hashes]
             unseen.sort(key=lambda f: f.get("time", 0))
-            for fill in unseen:
-                state.seen_fill_hashes.add(fill.get("hash"))
-                msg = format_fill(fill, vault_value)
+            for group in group_fills_by_order(unseen):
+                for fill in group:
+                    state.seen_fill_hashes.add(fill.get("hash"))
+                msg = format_fill(group, vault_value)
                 log.info("Fill: %s", msg)
                 await notifier.send(msg)
             if unseen:
