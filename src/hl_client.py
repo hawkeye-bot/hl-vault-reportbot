@@ -19,10 +19,10 @@ class HyperliquidClient:
     def get_fills_since(self, start_time_ms: int) -> list[dict]:
         return self.info.user_fills_by_time(self.vault_address, start_time_ms)
 
-    def get_vault_equity(self) -> float | None:
-        """Return the user's depositor equity in the vault (USD), or None on error."""
+    def get_vault_details(self) -> dict:
+        """Vault details plus this user's follower state (equity, all-time PnL, etc.)."""
         try:
-            result = self.info.post(
+            return self.info.post(
                 "/info",
                 {
                     "type": "vaultDetails",
@@ -30,23 +30,5 @@ class HyperliquidClient:
                     "user": self.user_address,
                 },
             )
-            follower = result.get("followerState") or {}
-            equity_str = follower.get("vaultEquity")
-            return float(equity_str) if equity_str is not None else None
         except Exception:
-            return None
-
-    def get_vault_all_time_pnl(self) -> float | None:
-        try:
-            result = self.info.post(
-                "/info",
-                {
-                    "type": "vaultDetails",
-                    "vaultAddress": self.vault_address,
-                    "user": self.user_address,
-                },
-            )
-            pnl_str = result.get("allTimePnl")
-            return float(pnl_str) if pnl_str is not None else None
-        except Exception:
-            return None
+            return {}

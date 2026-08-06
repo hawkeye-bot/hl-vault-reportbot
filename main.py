@@ -29,11 +29,10 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def _equity_footer(client: HyperliquidClient) -> str:
-    equity = client.get_vault_equity()
+def _equity_footer(equity: float | None) -> str:
     if equity is None:
         return ""
-    return f"\n\n<i>Your vault equity: ${equity:,.2f}</i>"
+    return f"\n\n<i>Your equity: ${equity:,.2f}</i>"
 
 
 def _vault_value(margin: dict) -> float | None:
@@ -41,20 +40,27 @@ def _vault_value(margin: dict) -> float | None:
     return float(account_value) if account_value else None
 
 
-async def send_daily_summary(client: HyperliquidClient, notifier: TelegramNotifier) -> None:
-    equity = client.get_vault_equity()
-    all_time_pnl = client.get_vault_all_time_pnl()
-    margin = client.get_margin_summary()
+def _user_equity(details: dict) -> float | None:
+    equity_str = (details.get("followerState") or {}).get("vaultEquity")
+    return float(equity_str) if equity_str is not None else None
 
-    lines = ["<b>Daily vault summary</b>"]
-    if equity is not None:
-        lines.append(f"Your equity: <b>${equity:,.2f}</b>")
+
+def _all_time_pnl(details: dict) -> float | None:
+    pnl_str = details.get("allTimePnl")
+    return float(pnl_str) if pnl_str is not None else None
+
+
+async def send_daily_summary(client: HyperliquidClient, notifier: TelegramNotifier) -> None:
+    details = client.get_vault_details()
+    equity = _user_equity(details)
+    all_time_pnl = _all_time_pnl(details)
+
+    lines = ["<b>Daily summary</b>"]
     if all_time_pnl is not None:
         sign = "+" if all_time_pnl >= 0 else ""
-        lines.append(f"Vault all-time PnL: <b>{sign}${all_time_pnl:,.2f}</b>")
-    account_value = margin.get("accountValue")
-    if account_value:
-        lines.append(f"Vault account value: ${float(account_value):,.2f}")
+        lines.append(f"All-time PnL: <b>{sign}${all_time_pnl:,.2f}</b>")
+    if equity is not None:
+        lines.append(f"Your equity: <b>${equity:,.2f}</b>")
 
     await notifier.send("\n".join(lines))
 
@@ -65,11 +71,13 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
     last_summary_day: int | None = None
 
     log.info("Starting vault monitor for %s", VAULT_ADDRESS)
+    startup_vault_value = _vault_value(client.get_margin_summary())
+    startup_equity = _user_equity(client.get_vault_details())
     await notifier.send(
-        f"Vault monitor started\n"
-        f"Vault: <code>{VAULT_ADDRESS}</code>\n"
-        f"User:  <code>{USER_ADDRESS}</code>\n\n"
-        f"{format_position_status(client.get_open_positions(), _vault_value(client.get_margin_summary()))}"
+        f"Monitor started\n"
+        f"Tracking: <code>{VAULT_ADDRESS}</code>\n"
+        f"User:     <code>{USER_ADDRESS}</code>\n\n"
+        f"{format_position_status(client.get_open_positions(), startup_vault_value, startup_equity)}"
     )
 
     while True:
@@ -83,6 +91,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
 
             margin = client.get_margin_summary()
             vault_value = _vault_value(margin)
+            equity = _user_equity(client.get_vault_details())
 
             # Liquidation warning
             margin_ratio_str = margin.get("marginRatio")
@@ -91,8 +100,8 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
                 if ratio < LIQUIDATION_WARN_THRESHOLD and not state.liquidation_warned:
                     await notifier.send(
                         f"<b>Liquidation warning</b>\n"
-                        f"Vault margin ratio is critically low: {ratio:.1%}\n"
-                        f"Threshold: {LIQUIDATION_WARN_THRESHOLD:.1%}{_equity_footer(client)}"
+                        f"Margin ratio is critically low: {ratio:.1%}\n"
+                        f"Threshold: {LIQUIDATION_WARN_THRESHOLD:.1%}{_equity_footer(equity)}"
                     )
                     state.liquidation_warned = True
                 elif ratio >= LIQUIDATION_WARN_THRESHOLD:
@@ -106,7 +115,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
             for group in group_fills_by_order(unseen):
                 for fill in group:
                     state.seen_fill_hashes.add(fill.get("hash"))
-                msg = format_fill(group, vault_value)
+                msg = format_fill(group, vault_value, equity)
                 log.info("Fill: %s", msg)
                 await notifier.send(msg)
             if unseen:
@@ -117,7 +126,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
             if silence >= HEARTBEAT_INTERVAL_SECONDS:
                 await notifier.send(
                     f"<b>Still online</b>\n"
-                    f"{format_position_status(client.get_open_positions(), vault_value)}"
+                    f"{format_position_status(client.get_open_positions(), vault_value, equity)}"
                 )
 
         except Exception as exc:
