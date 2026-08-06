@@ -8,13 +8,13 @@ class HyperliquidClient:
         self.user_address = user_address
         self.info = Info(constants.MAINNET_API_URL, skip_ws=True)
 
-    def get_open_positions(self) -> list[dict]:
-        state = self.info.user_state(self.vault_address)
-        return state.get("assetPositions", [])
-
     def get_margin_summary(self) -> dict:
         state = self.info.user_state(self.vault_address)
         return state.get("marginSummary", {})
+
+    def get_open_positions(self) -> list[dict]:
+        state = self.info.user_state(self.vault_address)
+        return state.get("assetPositions", [])
 
     def get_fills_since(self, start_time_ms: int) -> list[dict]:
         return self.info.user_fills_by_time(self.vault_address, start_time_ms)

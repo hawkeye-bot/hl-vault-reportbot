@@ -1,83 +1,61 @@
-"""Tracks vault state between polls and detects changes."""
+"""Tracks vault state between polls and formats fill notifications."""
 
 from dataclasses import dataclass, field
 
 
 @dataclass
-class PositionSnapshot:
-    coin: str
-    side: str  # "long" or "short"
-    size: float
-    entry_price: float
-    unrealized_pnl: float
-
-
-@dataclass
 class VaultState:
-    positions: dict[str, PositionSnapshot] = field(default_factory=dict)
     seen_fill_hashes: set[str] = field(default_factory=set)
     liquidation_warned: bool = False
 
 
-def parse_positions(asset_positions: list[dict]) -> dict[str, PositionSnapshot]:
-    result = {}
+def _pair(coin: str) -> str:
+    return f"{coin}USDC"
+
+
+def format_fill(fill: dict, vault_value: float | None) -> str:
+    coin = fill.get("coin", "?")
+    action = "Buy" if fill.get("side") == "B" else "Sell"
+    price = float(fill.get("px", 0))
+    size = float(fill.get("sz", 0))
+    start_pos = float(fill.get("startPosition", 0))
+    end_pos = start_pos + size if fill.get("side") == "B" else start_pos - size
+
+    exposure = ""
+    if vault_value:
+        before_pct = abs(start_pos) * price / vault_value * 100
+        after_pct = abs(end_pos) * price / vault_value * 100
+        exposure = f" · {after_pct - before_pct:+.2f}% (now {after_pct:.2f}%)"
+
+    pnl = float(fill.get("closedPnl") or 0)
+    pnl_str = ""
+    if abs(pnl) > 1e-9:
+        sign = "+" if pnl >= 0 else "-"
+        pnl_str = f" ({sign}${abs(pnl):,.2f})"
+
+    return f"<b>{_pair(coin)}</b> {action} @ ${price:,.4f}{exposure}{pnl_str}"
+
+
+def format_position_status(asset_positions: list[dict], vault_value: float | None) -> str:
+    lines = []
     for ap in asset_positions:
         pos = ap.get("position", {})
         coin = pos.get("coin")
-        if not coin:
+        size = float(pos.get("szi", 0) or 0)
+        if not coin or size == 0:
             continue
-        size = float(pos.get("szi", 0))
-        if size == 0:
-            continue
-        result[coin] = PositionSnapshot(
-            coin=coin,
-            side="long" if size > 0 else "short",
-            size=abs(size),
-            entry_price=float(pos.get("entryPx", 0) or 0),
-            unrealized_pnl=float(pos.get("unrealizedPnl", 0) or 0),
+        side = "Long" if size > 0 else "Short"
+        notional = float(pos.get("positionValue", 0) or 0)
+        exposure_pct = f" ({notional / vault_value * 100:.2f}%)" if vault_value else ""
+        pnl = float(pos.get("unrealizedPnl", 0) or 0)
+        sign = "+" if pnl >= 0 else "-"
+        lines.append(
+            f"{_pair(coin)} {side}\n"
+            f"Exposure: ${notional:,.2f}{exposure_pct}\n"
+            f"PnL: {sign}${abs(pnl):,.2f}"
         )
-    return result
 
-
-def diff_positions(
-    old: dict[str, PositionSnapshot], new: dict[str, PositionSnapshot]
-) -> list[str]:
-    events = []
-
-    for coin, new_pos in new.items():
-        if coin not in old:
-            events.append(
-                f"New {new_pos.side} position opened on {coin}: "
-                f"{new_pos.size} @ ${new_pos.entry_price:,.4f}"
-            )
-        else:
-            old_pos = old[coin]
-            if abs(new_pos.size - old_pos.size) > 1e-9:
-                direction = "increased" if new_pos.size > old_pos.size else "reduced"
-                events.append(
-                    f"{coin} {new_pos.side} position {direction}: "
-                    f"{old_pos.size} → {new_pos.size} (entry ${new_pos.entry_price:,.4f})"
-                )
-
-    for coin, old_pos in old.items():
-        if coin not in new:
-            events.append(
-                f"{coin} {old_pos.side} position closed "
-                f"(was {old_pos.size} @ ${old_pos.entry_price:,.4f})"
-            )
-
-    return events
-
-
-def format_fill(fill: dict) -> str:
-    coin = fill.get("coin", "?")
-    side = fill.get("side", "?")
-    size = float(fill.get("sz", 0))
-    price = float(fill.get("px", 0))
-    closed_pnl = fill.get("closedPnl")
-    pnl_str = ""
-    if closed_pnl is not None:
-        pnl = float(closed_pnl)
-        sign = "+" if pnl >= 0 else ""
-        pnl_str = f" | PnL: {sign}${pnl:,.2f}"
-    return f"Fill: {side.upper()} {size} {coin} @ ${price:,.4f}{pnl_str}"
+    body = "\n\n".join(lines) if lines else "No open positions"
+    if vault_value:
+        body += f"\n\nVault value: ${vault_value:,.2f}"
+    return body
