@@ -18,6 +18,7 @@ from src.notifier import TelegramNotifier
 from src.state_tracker import (
     VaultState,
     format_fill,
+    format_open_orders,
     format_position_status,
     group_fills_by_order,
 )
@@ -92,6 +93,19 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
             margin = client.get_margin_summary()
             vault_value = _vault_value(margin)
             equity = _user_equity(client.get_vault_details())
+            orders = client.get_open_orders()
+
+            # No resting sell order can mean the vault's trading bot is offline
+            has_sell_order = any(o.get("side") == "A" for o in orders)
+            if not has_sell_order and not state.no_sell_order_warned:
+                await notifier.send(
+                    "<b>No sell order found</b>\n"
+                    "The vault has no resting sell orders — the bot trading it "
+                    "may be offline."
+                )
+                state.no_sell_order_warned = True
+            elif has_sell_order:
+                state.no_sell_order_warned = False
 
             # Liquidation warning
             margin_ratio_str = margin.get("marginRatio")
@@ -126,7 +140,8 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
             if silence >= HEARTBEAT_INTERVAL_SECONDS:
                 await notifier.send(
                     f"<b>Still online</b>\n"
-                    f"{format_position_status(client.get_open_positions(), vault_value, equity)}"
+                    f"{format_position_status(client.get_open_positions(), vault_value, equity)}\n\n"
+                    f"<b>Open orders</b>\n{format_open_orders(orders)}"
                 )
 
         except Exception as exc:

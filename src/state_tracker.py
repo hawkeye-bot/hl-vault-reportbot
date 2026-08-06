@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 class VaultState:
     seen_fill_hashes: set[str] = field(default_factory=set)
     liquidation_warned: bool = False
+    no_sell_order_warned: bool = False
 
 
 def _pair(coin: str) -> str:
@@ -106,6 +107,7 @@ def format_position_status(
         notional = float(pos.get("positionValue", 0) or 0)
         exposure_pct = f" ({notional / vault_value * 100:.2f}%)" if vault_value else ""
         value_str = f"${notional * fraction:,.2f}" if fraction is not None else "n/a"
+        equity_line = f"Your equity: ${equity:,.2f}\n" if equity is not None else ""
 
         pnl_line = ""
         if fraction is not None:
@@ -121,10 +123,25 @@ def format_position_status(
         )
 
         lines.append(
-            f"Exposure: {value_str}{exposure_pct}{pnl_line}\n{_pair(coin)} {side}{price_line}"
+            f"{equity_line}Exposure: {value_str}{exposure_pct}{pnl_line}\n"
+            f"{_pair(coin)} {side}{price_line}"
         )
 
-    body = "\n\n".join(lines) if lines else "No open positions"
-    if equity is not None:
-        body += f"\n\nYour equity: ${equity:,.2f}"
-    return body
+    if lines:
+        return "\n\n".join(lines)
+    equity_str = f"\n\nYour equity: ${equity:,.2f}" if equity is not None else ""
+    return f"No open positions{equity_str}"
+
+
+def format_open_orders(orders: list[dict]) -> str:
+    if not orders:
+        return "No open orders"
+    lines = []
+    for o in orders:
+        coin = o.get("coin", "?")
+        action = "Buy" if o.get("side") == "B" else "Sell"
+        price = float(o.get("limitPx", 0) or 0)
+        notional = price * float(o.get("sz", 0) or 0)
+        tag = " (reduce-only)" if o.get("reduceOnly") else ""
+        lines.append(f"{_pair(coin)} {action} @ ${_format_price(price)} · ${notional:,.2f}{tag}")
+    return "\n".join(lines)

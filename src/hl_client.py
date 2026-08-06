@@ -19,6 +19,9 @@ class HyperliquidClient:
     def get_fills_since(self, start_time_ms: int) -> list[dict]:
         return self.info.user_fills_by_time(self.vault_address, start_time_ms)
 
+    def get_open_orders(self) -> list[dict]:
+        return self.info.open_orders(self.vault_address)
+
     def get_vault_details(self) -> dict:
         """Vault details plus this user's follower state (equity, all-time PnL, etc.)."""
         try:
