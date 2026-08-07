@@ -132,7 +132,9 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                     ]
                     if equity is not None:
                         rows.append(("Equity", f"${equity:,.2f}"))
-                    await notifier.send(f"<b>Liquidation warning</b>\n{format_table(rows)}")
+                    await notifier.send(
+                        f"<b>Liquidation warning</b>\n{format_table(rows)}", force=True
+                    )
                     state.liquidation_warned = True
                 elif ratio >= LIQUIDATION_WARN_THRESHOLD:
                     state.liquidation_warned = False
@@ -181,7 +183,8 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
             if should_warn and not state.sell_coverage_warned:
                 await notifier.send(
                     f"🚨 <b>Sell order mismatch</b>\n{format_sell_coverage_gap(gap)}\n"
-                    f"<i>The bot trading this vault may be offline.</i>"
+                    f"<i>The bot trading this vault may be offline.</i>",
+                    force=True,
                 )
                 state.sell_coverage_warned = True
             elif not should_warn:

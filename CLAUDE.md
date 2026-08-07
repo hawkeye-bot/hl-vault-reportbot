@@ -26,13 +26,15 @@ All config is env vars loaded via `.env` (see `.env.example`), read once in `src
 - `USER_ADDRESS` — the depositor whose share of the vault is reported (equity, scaled PnL).
 - `POLL_INTERVAL_SECONDS`, `LIQUIDATION_WARN_THRESHOLD`, `HEARTBEAT_INTERVAL_SECONDS` — tunables, all with defaults.
 
+Quiet hours (23:00–06:00 local time, hardcoded in `src/notifier.py`) hold all non-critical sends. Liquidation warnings and sell-coverage-mismatch alerts pass `force=True` to `TelegramNotifier.send` to bypass this; the `/status` command replies directly via `update.message.reply_text` rather than through the notifier, so it's unaffected either way.
+
 ## Architecture
 
 Four modules, each with one job:
 
 - **`src/hl_client.py`** — `HyperliquidClient` wraps the `hyperliquid` SDK's `Info` endpoint (mainnet, no websocket). All reads (margin summary, positions, fills, open orders, vault details) go through here.
 - **`src/state_tracker.py`** — pure functions and the `VaultState` dataclass. No I/O. This is where almost all logic lives: fill grouping, sell-coverage-gap detection, and every `format_*` function that turns raw API dicts into the monospace `<pre>` tables sent to Telegram. Edit here for message-content changes.
-- **`src/notifier.py`** — thin wrapper around `telegram.Bot.send_message`, tracks `last_sent_at` (used by the heartbeat check).
+- **`src/notifier.py`** — thin wrapper around `telegram.Bot.send_message`, tracks `last_sent_at` (used by the heartbeat check) and enforces quiet hours unless the caller passes `force=True`.
 - **`main.py`** — wires the above together: `run()` builds the client/notifier/state and a `python-telegram-bot` `Application` (for the `/status` command handler), then runs `poll_loop()` forever alongside it.
 
 ### Poll loop (`main.py:poll_loop`)
@@ -52,7 +54,7 @@ Buy-side "Distance" is measured from the price of the fill that *originally open
 - Updated live whenever a fill opens a position from flat (`startPosition == 0`).
 - Cleared when a position returns to flat.
 
-Sell-side "Distance" instead uses the position's current blended entry price.
+Sell fills omit "Distance" (and the fill count) entirely — `format_fill` instead reports either a full close (plus resulting equity) or the exposure remaining on a partial sell, prefixed with a bold "Sell" header so it reads unambiguously even in a notification preview.
 
 ### Money math conventions
 
