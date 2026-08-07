@@ -146,14 +146,19 @@ def format_fill(
     """Format one or more partial fills of the same order as a single message.
 
     Exposure % is relative to the whole vault; the dollar PnL is scaled down to
-    this user's share of it, since the vault pools multiple followers. Distance
-    is measured from the price that first opened the position on buys (not the
-    blended average, which shifts with every DCA), and from the current entry
-    price on sells.
+    this user's share of it, since the vault pools multiple followers.
+
+    Buys report exposure added/now plus Distance (from the price that first
+    opened the position, not the blended average, which shifts with every
+    DCA) and a fill count. Sells instead report either that the position was
+    closed (plus the resulting equity) or, for a partial sell, the exposure
+    still remaining - "exposure added" reads oddly negative for a sell -
+    and omit Distance/Fills as noise once a position is being unwound.
     """
     first, last = fills[0], fills[-1]
     coin = first.get("coin", "?")
-    action = "Buy" if first.get("side") == "B" else "Sell"
+    is_buy = first.get("side") == "B"
+    action = "Buy" if is_buy else "Sell"
 
     total_sz = sum(float(f.get("sz", 0)) for f in fills)
     vwap = (
@@ -164,26 +169,37 @@ def format_fill(
 
     start_pos = float(first.get("startPosition", 0))
     end_pos = position_after_fills(fills)
+    closed = not is_buy and end_pos == 0
 
     fraction = _fraction(vault_value, equity)
 
     rows = []
-    if vault_value:
-        before_pct = abs(start_pos) * vwap / vault_value * 100
-        after_pct = abs(end_pos) * vwap / vault_value * 100
+    if is_buy:
+        if vault_value:
+            before_pct = abs(start_pos) * vwap / vault_value * 100
+            after_pct = abs(end_pos) * vwap / vault_value * 100
 
-        added_str = f"{after_pct - before_pct:+.2f}%"
+            added_str = f"{after_pct - before_pct:+.2f}%"
+            now_str = f"{after_pct:.2f}%"
+            if fraction is not None:
+                before_value = abs(start_pos) * vwap * fraction
+                after_value = abs(end_pos) * vwap * fraction
+                added_value = after_value - before_value
+                added_sign = "+" if added_value >= 0 else "-"
+                added_str += f" ({added_sign}${abs(added_value):,.2f})"
+                now_str += f" (${after_value:,.2f})"
+
+            rows.append(("Exposure added", added_str))
+            rows.append(("Exposure now", now_str))
+    elif closed:
+        rows.append(("Position", "Closed"))
+    elif vault_value:
+        after_pct = abs(end_pos) * vwap / vault_value * 100
         now_str = f"{after_pct:.2f}%"
         if fraction is not None:
-            before_value = abs(start_pos) * vwap * fraction
             after_value = abs(end_pos) * vwap * fraction
-            added_value = after_value - before_value
-            added_sign = "+" if added_value >= 0 else "-"
-            added_str += f" ({added_sign}${abs(added_value):,.2f})"
             now_str += f" (${after_value:,.2f})"
-
-        rows.append(("Exposure added", added_str))
-        rows.append(("Exposure now", now_str))
+        rows.append(("Exposure remaining", now_str))
 
     if fraction is not None:
         raw_pnl = sum(float(f.get("closedPnl") or 0) for f in fills)
@@ -193,19 +209,24 @@ def format_fill(
             pct_str = f" ({pnl / equity * 100:+.2f}%)" if equity else ""
             rows.append(("PnL", f"{sign}${abs(pnl):,.2f}{pct_str}"))
 
+    if closed and equity is not None:
+        rows.append(("Equity", f"${equity:,.2f}"))
+
     rows.append(("Symbol", f"{_pair(coin)} {action}"))
     rows.append(("Price", f"${_format_price(vwap)}"))
     if entry_price:
         rows.append(("Entry price", f"${_format_price(entry_price)}"))
 
-    distance_ref = first_entry_price if action == "Buy" else entry_price
-    if distance_ref:
-        rows.append(("Distance", f"{(vwap - distance_ref) / distance_ref * 100:+.2f}%"))
+    if is_buy:
+        if first_entry_price:
+            rows.append(
+                ("Distance", f"{(vwap - first_entry_price) / first_entry_price * 100:+.2f}%")
+            )
+        if len(fills) > 1:
+            rows.append(("Fills", str(len(fills))))
 
-    if len(fills) > 1:
-        rows.append(("Fills", str(len(fills))))
-
-    return format_table(rows)
+    table = format_table(rows)
+    return table if is_buy else f"<b>Sell</b>\n{table}"
 
 
 def format_position_status(
