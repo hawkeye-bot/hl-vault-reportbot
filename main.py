@@ -58,7 +58,7 @@ async def send_daily_summary(client: HyperliquidClient, notifier: TelegramNotifi
         sign = "+" if all_time_pnl >= 0 else ""
         rows.append(("All-time PnL", f"{sign}${all_time_pnl:,.2f}"))
     if equity is not None:
-        rows.append(("Your equity", f"${equity:,.2f}"))
+        rows.append(("Equity", f"${equity:,.2f}"))
 
     message = "<b>Daily summary</b>"
     if rows:
@@ -105,7 +105,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
                         ("Threshold", f"{LIQUIDATION_WARN_THRESHOLD:.1%}"),
                     ]
                     if equity is not None:
-                        rows.append(("Your equity", f"${equity:,.2f}"))
+                        rows.append(("Equity", f"${equity:,.2f}"))
                     await notifier.send(f"<b>Liquidation warning</b>\n{format_table(rows)}")
                     state.liquidation_warned = True
                 elif ratio >= LIQUIDATION_WARN_THRESHOLD:

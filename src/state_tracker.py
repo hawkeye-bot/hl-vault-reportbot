@@ -192,7 +192,7 @@ def format_position_status(
 
         rows = []
         if equity is not None:
-            rows.append(("Your equity", f"${equity:,.2f}"))
+            rows.append(("Equity", f"${equity:,.2f}"))
         rows.append(("Exposure", f"{value_str}{exposure_pct}"))
         if fraction is not None:
             pnl = float(pos.get("unrealizedPnl", 0) or 0) * fraction
@@ -211,7 +211,7 @@ def format_position_status(
     if tables:
         return "\n\n".join(tables)
     if equity is not None:
-        return f"No open positions\n\n{format_table([('Your equity', f'${equity:,.2f}')])}"
+        return f"No open positions\n\n{format_table([('Equity', f'${equity:,.2f}')])}"
     return "No open positions"
 
 
