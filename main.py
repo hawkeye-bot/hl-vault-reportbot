@@ -1,10 +1,11 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
+
+from telegram import ReplyKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, ContextTypes, filters
 
 from src.config import (
-    DAILY_SUMMARY_HOUR,
     HEARTBEAT_INTERVAL_SECONDS,
     LIQUIDATION_WARN_THRESHOLD,
     POLL_INTERVAL_SECONDS,
@@ -32,6 +33,8 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+STATUS_KEYBOARD = ReplyKeyboardMarkup([["/status"]], resize_keyboard=True, is_persistent=True)
+
 
 def _vault_value(margin: dict) -> float | None:
     account_value = margin.get("accountValue")
@@ -43,33 +46,28 @@ def _user_equity(details: dict) -> float | None:
     return float(equity_str) if equity_str is not None else None
 
 
-def _all_time_pnl(details: dict) -> float | None:
-    pnl_str = details.get("allTimePnl")
-    return float(pnl_str) if pnl_str is not None else None
+def _status_message(title: str, client: HyperliquidClient) -> str:
+    vault_value = _vault_value(client.get_margin_summary())
+    equity = _user_equity(client.get_vault_details())
+    positions = client.get_open_positions()
+    orders = client.get_open_orders()
+    return (
+        f"<b>{title}</b>\n"
+        f"{format_position_status(positions, vault_value, equity)}\n\n"
+        f"<b>Open orders</b>\n{format_open_orders(orders)}"
+    )
 
 
-async def send_daily_summary(client: HyperliquidClient, notifier: TelegramNotifier) -> None:
-    details = client.get_vault_details()
-    equity = _user_equity(details)
-    all_time_pnl = _all_time_pnl(details)
-
-    rows = []
-    if all_time_pnl is not None:
-        sign = "+" if all_time_pnl >= 0 else ""
-        rows.append(("All-time PnL", f"{sign}${all_time_pnl:,.2f}"))
-    if equity is not None:
-        rows.append(("Equity", f"${equity:,.2f}"))
-
-    message = "<b>Daily summary</b>"
-    if rows:
-        message += f"\n{format_table(rows)}"
-    await notifier.send(message)
+async def handle_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    client: HyperliquidClient = context.bot_data["client"]
+    await update.message.reply_text(
+        _status_message("Status", client), parse_mode="HTML", reply_markup=STATUS_KEYBOARD
+    )
 
 
 async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> None:
     state = VaultState()
     last_fill_time_ms = int(time.time() * 1000)
-    last_summary_day: int | None = None
 
     log.info("Starting vault monitor for %s", VAULT_ADDRESS)
     startup_vault_value = _vault_value(client.get_margin_summary())
@@ -77,18 +75,13 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
     tracking_table = format_table([("Tracking", VAULT_ADDRESS), ("User", USER_ADDRESS)])
     await notifier.send(
         f"<b>Monitor started</b>\n{tracking_table}\n\n"
-        f"{format_position_status(client.get_open_positions(), startup_vault_value, startup_equity)}"
+        f"{format_position_status(client.get_open_positions(), startup_vault_value, startup_equity)}\n\n"
+        f"<b>Open orders</b>\n{format_open_orders(client.get_open_orders())}",
+        reply_markup=STATUS_KEYBOARD,
     )
 
     while True:
         try:
-            now_utc = datetime.now(timezone.utc)
-
-            # Daily summary
-            if now_utc.hour == DAILY_SUMMARY_HOUR and now_utc.day != last_summary_day:
-                await send_daily_summary(client, notifier)
-                last_summary_day = now_utc.day
-
             margin = client.get_margin_summary()
             vault_value = _vault_value(margin)
             equity = _user_equity(client.get_vault_details())
@@ -113,14 +106,19 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
 
             # New fills, oldest first so a burst between polls posts in order;
             # partial fills of the same order are grouped into one message
+            entry_price_by_coin = {
+                ap["position"]["coin"]: float(ap["position"].get("entryPx", 0) or 0)
+                for ap in positions
+                if ap.get("position", {}).get("coin")
+            }
             new_fills = client.get_fills_since(last_fill_time_ms)
             unseen = [f for f in new_fills if f.get("hash") not in state.seen_fill_hashes]
             unseen.sort(key=lambda f: f.get("time", 0))
-            sell_filled_this_cycle = any(f.get("side") == "A" for f in unseen)
             for group in group_fills_by_order(unseen):
                 for fill in group:
                     state.seen_fill_hashes.add(fill.get("hash"))
-                msg = format_fill(group, vault_value, equity)
+                coin = group[0].get("coin")
+                msg = format_fill(group, vault_value, equity, entry_price_by_coin.get(coin))
                 log.info("Fill: %s", msg)
                 await notifier.send(msg)
             if unseen:
@@ -129,13 +127,15 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
             # A long position whose resting sell orders don't add up to its full
             # size can mean the vault's trading bot is offline or stuck (e.g. a
             # DCA fill grew the position but the old sell order was never
-            # resized); skip right after a sell just filled, since a transient
-            # mismatch between the positions and orders endpoints is expected
+            # resized); skip for the cycle any fill (buy or sell) happens, since
+            # the trading bot needs a moment to resize/replace its sell order
+            # after moving the position, and the positions/orders endpoints can
+            # also be transiently out of sync with each other right after a fill
             gap = find_sell_coverage_gap(positions, orders)
-            should_warn = gap is not None and not sell_filled_this_cycle
+            should_warn = gap is not None and not unseen
             if should_warn and not state.sell_coverage_warned:
                 await notifier.send(
-                    f"<b>Sell order mismatch</b>\n{format_sell_coverage_gap(gap)}\n"
+                    f"🚨 <b>Sell order mismatch</b>\n{format_sell_coverage_gap(gap)}\n"
                     f"<i>The bot trading this vault may be offline.</i>"
                 )
                 state.sell_coverage_warned = True
@@ -157,10 +157,31 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
-def main() -> None:
+async def run() -> None:
     client = HyperliquidClient(VAULT_ADDRESS, USER_ADDRESS)
     notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-    asyncio.run(poll_loop(client, notifier))
+
+    application = Application.builder().bot(notifier.bot).build()
+    application.bot_data["client"] = client
+    application.add_handler(
+        CommandHandler(
+            "status", handle_status_command, filters=filters.Chat(int(TELEGRAM_CHAT_ID))
+        )
+    )
+
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(drop_pending_updates=True)
+    try:
+        await poll_loop(client, notifier)
+    finally:
+        await application.updater.stop()
+        await application.stop()
+        await application.shutdown()
+
+
+def main() -> None:
+    asyncio.run(run())
 
 
 if __name__ == "__main__":

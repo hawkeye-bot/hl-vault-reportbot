@@ -110,7 +110,12 @@ def format_sell_coverage_gap(gap: dict) -> str:
     return format_table(rows)
 
 
-def format_fill(fills: list[dict], vault_value: float | None, equity: float | None) -> str:
+def format_fill(
+    fills: list[dict],
+    vault_value: float | None,
+    equity: float | None,
+    entry_price: float | None = None,
+) -> str:
     """Format one or more partial fills of the same order as a single message.
 
     Exposure % is relative to the whole vault; the dollar PnL is scaled down to
@@ -165,6 +170,8 @@ def format_fill(fills: list[dict], vault_value: float | None, equity: float | No
 
     rows.append(("Symbol", f"{_pair(coin)} {action}"))
     rows.append(("Price", f"${_format_price(vwap)}"))
+    if entry_price:
+        rows.append(("Entry price", f"${_format_price(entry_price)}"))
     if len(fills) > 1:
         rows.append(("Fills", str(len(fills))))
 

@@ -9,10 +9,11 @@ class TelegramNotifier:
         self.chat_id = chat_id
         self.last_sent_at: float | None = None
 
-    async def send(self, message: str) -> None:
+    async def send(self, message: str, reply_markup=None) -> None:
         await self.bot.send_message(
             chat_id=self.chat_id,
             text=message,
             parse_mode="HTML",
+            reply_markup=reply_markup,
         )
         self.last_sent_at = time.monotonic()
