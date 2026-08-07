@@ -17,9 +17,12 @@ from src.hl_client import HyperliquidClient
 from src.notifier import TelegramNotifier
 from src.state_tracker import (
     VaultState,
+    find_sell_coverage_gap,
     format_fill,
     format_open_orders,
     format_position_status,
+    format_sell_coverage_gap,
+    format_table,
     group_fills_by_order,
 )
 
@@ -28,12 +31,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
-
-
-def _equity_footer(equity: float | None) -> str:
-    if equity is None:
-        return ""
-    return f"\n\n<i>Your equity: ${equity:,.2f}</i>"
 
 
 def _vault_value(margin: dict) -> float | None:
@@ -56,14 +53,17 @@ async def send_daily_summary(client: HyperliquidClient, notifier: TelegramNotifi
     equity = _user_equity(details)
     all_time_pnl = _all_time_pnl(details)
 
-    lines = ["<b>Daily summary</b>"]
+    rows = []
     if all_time_pnl is not None:
         sign = "+" if all_time_pnl >= 0 else ""
-        lines.append(f"All-time PnL: <b>{sign}${all_time_pnl:,.2f}</b>")
+        rows.append(("All-time PnL", f"{sign}${all_time_pnl:,.2f}"))
     if equity is not None:
-        lines.append(f"Your equity: <b>${equity:,.2f}</b>")
+        rows.append(("Your equity", f"${equity:,.2f}"))
 
-    await notifier.send("\n".join(lines))
+    message = "<b>Daily summary</b>"
+    if rows:
+        message += f"\n{format_table(rows)}"
+    await notifier.send(message)
 
 
 async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> None:
@@ -74,10 +74,9 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
     log.info("Starting vault monitor for %s", VAULT_ADDRESS)
     startup_vault_value = _vault_value(client.get_margin_summary())
     startup_equity = _user_equity(client.get_vault_details())
+    tracking_table = format_table([("Tracking", VAULT_ADDRESS), ("User", USER_ADDRESS)])
     await notifier.send(
-        f"Monitor started\n"
-        f"Tracking: <code>{VAULT_ADDRESS}</code>\n"
-        f"User:     <code>{USER_ADDRESS}</code>\n\n"
+        f"<b>Monitor started</b>\n{tracking_table}\n\n"
         f"{format_position_status(client.get_open_positions(), startup_vault_value, startup_equity)}"
     )
 
@@ -101,11 +100,13 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
             if margin_ratio_str is not None:
                 ratio = float(margin_ratio_str)
                 if ratio < LIQUIDATION_WARN_THRESHOLD and not state.liquidation_warned:
-                    await notifier.send(
-                        f"<b>Liquidation warning</b>\n"
-                        f"Margin ratio is critically low: {ratio:.1%}\n"
-                        f"Threshold: {LIQUIDATION_WARN_THRESHOLD:.1%}{_equity_footer(equity)}"
-                    )
+                    rows = [
+                        ("Margin ratio", f"{ratio:.1%}"),
+                        ("Threshold", f"{LIQUIDATION_WARN_THRESHOLD:.1%}"),
+                    ]
+                    if equity is not None:
+                        rows.append(("Your equity", f"${equity:,.2f}"))
+                    await notifier.send(f"<b>Liquidation warning</b>\n{format_table(rows)}")
                     state.liquidation_warned = True
                 elif ratio >= LIQUIDATION_WARN_THRESHOLD:
                     state.liquidation_warned = False
@@ -125,29 +126,27 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
             if unseen:
                 last_fill_time_ms = int(time.time() * 1000)
 
-            # No resting sell order while holding a position can mean the vault's
-            # trading bot is offline; skip right after a sell just filled, since
-            # the filled order is expected to be gone from the book that cycle
-            has_open_position = any(
-                float(ap.get("position", {}).get("szi", 0) or 0) != 0 for ap in positions
-            )
-            has_sell_order = any(o.get("side") == "A" for o in orders)
-            should_warn = has_open_position and not has_sell_order and not sell_filled_this_cycle
-            if should_warn and not state.no_sell_order_warned:
+            # A long position whose resting sell orders don't add up to its full
+            # size can mean the vault's trading bot is offline or stuck (e.g. a
+            # DCA fill grew the position but the old sell order was never
+            # resized); skip right after a sell just filled, since a transient
+            # mismatch between the positions and orders endpoints is expected
+            gap = find_sell_coverage_gap(positions, orders)
+            should_warn = gap is not None and not sell_filled_this_cycle
+            if should_warn and not state.sell_coverage_warned:
                 await notifier.send(
-                    "<b>No sell order found</b>\n"
-                    "The vault holds a position with no resting sell orders — "
-                    "the bot trading it may be offline."
+                    f"<b>Sell order mismatch</b>\n{format_sell_coverage_gap(gap)}\n"
+                    f"<i>The bot trading this vault may be offline.</i>"
                 )
-                state.no_sell_order_warned = True
+                state.sell_coverage_warned = True
             elif not should_warn:
-                state.no_sell_order_warned = False
+                state.sell_coverage_warned = False
 
             # Heartbeat: prove we're still alive if nothing else has posted in a while
             silence = time.monotonic() - notifier.last_sent_at
             if silence >= HEARTBEAT_INTERVAL_SECONDS:
                 await notifier.send(
-                    f"<b>Still online</b>\n"
+                    f"<b>Heartbeat</b>\n"
                     f"{format_position_status(positions, vault_value, equity)}\n\n"
                     f"<b>Open orders</b>\n{format_open_orders(orders)}"
                 )
