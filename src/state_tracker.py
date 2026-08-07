@@ -160,8 +160,7 @@ def format_fill(fills: list[dict], vault_value: float | None, equity: float | No
         pnl = raw_pnl * fraction
         if abs(pnl) > 1e-9:
             sign = "+" if pnl >= 0 else "-"
-            closed_notional = vwap * total_sz
-            pct_str = f" ({raw_pnl / closed_notional * 100:+.2f}%)" if closed_notional else ""
+            pct_str = f" ({pnl / equity * 100:+.2f}%)" if equity else ""
             rows.append(("PnL", f"{sign}${abs(pnl):,.2f}{pct_str}"))
 
     rows.append(("Symbol", f"{_pair(coin)} {action}"))
@@ -196,10 +195,9 @@ def format_position_status(
             rows.append(("Your equity", f"${equity:,.2f}"))
         rows.append(("Exposure", f"{value_str}{exposure_pct}"))
         if fraction is not None:
-            raw_pnl = float(pos.get("unrealizedPnl", 0) or 0)
-            pnl = raw_pnl * fraction
+            pnl = float(pos.get("unrealizedPnl", 0) or 0) * fraction
             sign = "+" if pnl >= 0 else "-"
-            pct_str = f" ({raw_pnl / notional * 100:+.2f}%)" if notional else ""
+            pct_str = f" ({pnl / equity * 100:+.2f}%)" if equity else ""
             rows.append(("PnL", f"{sign}${abs(pnl):,.2f}{pct_str}"))
 
         current_price = notional / abs(size) if size else 0
