@@ -18,6 +18,7 @@ from src.hl_client import HyperliquidClient
 from src.notifier import TelegramNotifier
 from src.state_tracker import (
     VaultState,
+    find_position_open_price,
     find_sell_coverage_gap,
     format_fill,
     format_open_orders,
@@ -25,6 +26,7 @@ from src.state_tracker import (
     format_sell_coverage_gap,
     format_table,
     group_fills_by_order,
+    position_after_fills,
 )
 
 logging.basicConfig(
@@ -34,6 +36,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 STATUS_KEYBOARD = ReplyKeyboardMarkup([["/status"]], resize_keyboard=True, is_persistent=True)
+FIRST_ENTRY_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000  # 30 days
 
 
 def _vault_value(margin: dict) -> float | None:
@@ -46,7 +49,15 @@ def _user_equity(details: dict) -> float | None:
     return float(equity_str) if equity_str is not None else None
 
 
-def _status_message(title: str, client: HyperliquidClient) -> str:
+def _entry_price_by_coin(positions: list[dict]) -> dict[str, float]:
+    return {
+        ap["position"]["coin"]: float(ap["position"].get("entryPx", 0) or 0)
+        for ap in positions
+        if ap.get("position", {}).get("coin")
+    }
+
+
+def _status_message(title: str, client: HyperliquidClient, state: VaultState) -> str:
     vault_value = _vault_value(client.get_margin_summary())
     equity = _user_equity(client.get_vault_details())
     positions = client.get_open_positions()
@@ -54,29 +65,51 @@ def _status_message(title: str, client: HyperliquidClient) -> str:
     return (
         f"<b>{title}</b>\n"
         f"{format_position_status(positions, vault_value, equity)}\n\n"
-        f"<b>Open orders</b>\n{format_open_orders(orders)}"
+        f"<b>Open orders</b>\n"
+        f"{format_open_orders(orders, _entry_price_by_coin(positions), state.first_entry_price)}"
     )
 
 
 async def handle_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client: HyperliquidClient = context.bot_data["client"]
+    state: VaultState = context.bot_data["state"]
     await update.message.reply_text(
-        _status_message("Status", client), parse_mode="HTML", reply_markup=STATUS_KEYBOARD
+        _status_message("Status", client, state), parse_mode="HTML", reply_markup=STATUS_KEYBOARD
     )
 
 
-async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> None:
-    state = VaultState()
+async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state: VaultState) -> None:
     last_fill_time_ms = int(time.time() * 1000)
 
     log.info("Starting vault monitor for %s", VAULT_ADDRESS)
+    startup_positions = client.get_open_positions()
     startup_vault_value = _vault_value(client.get_margin_summary())
     startup_equity = _user_equity(client.get_vault_details())
+
+    # Seed the true first-fill price for positions already open when the bot
+    # starts (e.g. after downtime) from fill history, so "Distance" is right
+    # even though we didn't watch this position open live. Falls back to the
+    # current blended entry price if the opening fill is older than the
+    # lookback window.
+    lookback_fills = client.get_fills_since(int(time.time() * 1000) - FIRST_ENTRY_LOOKBACK_MS)
+    for ap in startup_positions:
+        pos = ap.get("position", {})
+        coin = pos.get("coin")
+        if not coin or float(pos.get("szi", 0) or 0) == 0:
+            continue
+        open_price = find_position_open_price(lookback_fills, coin)
+        state.first_entry_price[coin] = (
+            open_price if open_price is not None else float(pos.get("entryPx", 0) or 0)
+        )
+
     tracking_table = format_table([("Tracking", VAULT_ADDRESS), ("User", USER_ADDRESS)])
+    startup_orders = format_open_orders(
+        client.get_open_orders(), _entry_price_by_coin(startup_positions), state.first_entry_price
+    )
     await notifier.send(
         f"<b>Monitor started</b>\n{tracking_table}\n\n"
-        f"{format_position_status(client.get_open_positions(), startup_vault_value, startup_equity)}\n\n"
-        f"<b>Open orders</b>\n{format_open_orders(client.get_open_orders())}",
+        f"{format_position_status(startup_positions, startup_vault_value, startup_equity)}\n\n"
+        f"<b>Open orders</b>\n{startup_orders}",
         reply_markup=STATUS_KEYBOARD,
     )
 
@@ -106,11 +139,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
 
             # New fills, oldest first so a burst between polls posts in order;
             # partial fills of the same order are grouped into one message
-            entry_price_by_coin = {
-                ap["position"]["coin"]: float(ap["position"].get("entryPx", 0) or 0)
-                for ap in positions
-                if ap.get("position", {}).get("coin")
-            }
+            entry_price_by_coin = _entry_price_by_coin(positions)
             new_fills = client.get_fills_since(last_fill_time_ms)
             unseen = [f for f in new_fills if f.get("hash") not in state.seen_fill_hashes]
             unseen.sort(key=lambda f: f.get("time", 0))
@@ -118,9 +147,25 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
                 for fill in group:
                     state.seen_fill_hashes.add(fill.get("hash"))
                 coin = group[0].get("coin")
-                msg = format_fill(group, vault_value, equity, entry_price_by_coin.get(coin))
+
+                # Remember the price that opened this position from flat, so a
+                # buy's "Distance" can reference the original entry rather than
+                # the blended average that shifts with every DCA
+                if group[0].get("side") == "B" and float(group[0].get("startPosition", 0) or 0) == 0:
+                    state.first_entry_price[coin] = float(group[0].get("px", 0) or 0)
+
+                msg = format_fill(
+                    group,
+                    vault_value,
+                    equity,
+                    entry_price_by_coin.get(coin),
+                    state.first_entry_price.get(coin),
+                )
                 log.info("Fill: %s", msg)
                 await notifier.send(msg)
+
+                if position_after_fills(group) == 0:
+                    state.first_entry_price.pop(coin, None)
             if unseen:
                 last_fill_time_ms = int(time.time() * 1000)
 
@@ -148,7 +193,8 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
                 await notifier.send(
                     f"<b>Heartbeat</b>\n"
                     f"{format_position_status(positions, vault_value, equity)}\n\n"
-                    f"<b>Open orders</b>\n{format_open_orders(orders)}"
+                    f"<b>Open orders</b>\n"
+                    f"{format_open_orders(orders, entry_price_by_coin, state.first_entry_price)}"
                 )
 
         except Exception as exc:
@@ -160,9 +206,11 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier) -> No
 async def run() -> None:
     client = HyperliquidClient(VAULT_ADDRESS, USER_ADDRESS)
     notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+    state = VaultState()
 
     application = Application.builder().bot(notifier.bot).build()
     application.bot_data["client"] = client
+    application.bot_data["state"] = state
     application.add_handler(
         CommandHandler(
             "status", handle_status_command, filters=filters.Chat(int(TELEGRAM_CHAT_ID))
@@ -173,7 +221,7 @@ async def run() -> None:
     await application.start()
     await application.updater.start_polling(drop_pending_updates=True)
     try:
-        await poll_loop(client, notifier)
+        await poll_loop(client, notifier, state)
     finally:
         await application.updater.stop()
         await application.stop()

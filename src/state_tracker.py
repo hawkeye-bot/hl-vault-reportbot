@@ -8,6 +8,7 @@ class VaultState:
     seen_fill_hashes: set[str] = field(default_factory=set)
     liquidation_warned: bool = False
     sell_coverage_warned: bool = False
+    first_entry_price: dict[str, float] = field(default_factory=dict)
 
 
 def _pair(coin: str) -> str:
@@ -53,6 +54,31 @@ def format_grid(headers: list[str], rows: list[list[str]]) -> str:
     lines = [fmt(headers), fmt(["-" * w for w in widths])]
     lines.extend(fmt(r) for r in rows)
     return f"<pre>{chr(10).join(lines)}</pre>"
+
+
+def position_after_fills(fills: list[dict]) -> float:
+    """The signed position size after this list of chronological fills."""
+    last = fills[-1]
+    last_sz = float(last.get("sz", 0) or 0)
+    start = float(last.get("startPosition", 0) or 0)
+    return start + last_sz if last.get("side") == "B" else start - last_sz
+
+
+def find_position_open_price(fills: list[dict], coin: str) -> float | None:
+    """Find the price of the fill that most recently opened `coin`'s position
+    from flat, using historical fill data (each fill records its own
+    startPosition) rather than relying on having watched it happen live -
+    important if the bot was offline when the position last opened.
+    """
+    coin_fills = sorted(
+        (f for f in fills if f.get("coin") == coin), key=lambda f: f.get("time", 0)
+    )
+    opens = [
+        f
+        for f in coin_fills
+        if f.get("side") == "B" and float(f.get("startPosition", 0) or 0) == 0
+    ]
+    return float(opens[-1]["px"]) if opens else None
 
 
 def group_fills_by_order(fills: list[dict]) -> list[list[dict]]:
@@ -115,11 +141,15 @@ def format_fill(
     vault_value: float | None,
     equity: float | None,
     entry_price: float | None = None,
+    first_entry_price: float | None = None,
 ) -> str:
     """Format one or more partial fills of the same order as a single message.
 
     Exposure % is relative to the whole vault; the dollar PnL is scaled down to
-    this user's share of it, since the vault pools multiple followers.
+    this user's share of it, since the vault pools multiple followers. Distance
+    is measured from the price that first opened the position on buys (not the
+    blended average, which shifts with every DCA), and from the current entry
+    price on sells.
     """
     first, last = fills[0], fills[-1]
     coin = first.get("coin", "?")
@@ -132,13 +162,8 @@ def format_fill(
         else 0
     )
 
-    last_sz = float(last.get("sz", 0))
     start_pos = float(first.get("startPosition", 0))
-    end_pos = (
-        float(last.get("startPosition", 0)) + last_sz
-        if last.get("side") == "B"
-        else float(last.get("startPosition", 0)) - last_sz
-    )
+    end_pos = position_after_fills(fills)
 
     fraction = _fraction(vault_value, equity)
 
@@ -172,6 +197,11 @@ def format_fill(
     rows.append(("Price", f"${_format_price(vwap)}"))
     if entry_price:
         rows.append(("Entry price", f"${_format_price(entry_price)}"))
+
+    distance_ref = first_entry_price if action == "Buy" else entry_price
+    if distance_ref:
+        rows.append(("Distance", f"{(vwap - distance_ref) / distance_ref * 100:+.2f}%"))
+
     if len(fills) > 1:
         rows.append(("Fills", str(len(fills))))
 
@@ -217,20 +247,47 @@ def format_position_status(
 
     if tables:
         return "\n\n".join(tables)
+
+    rows = []
     if equity is not None:
-        return f"No open positions\n\n{format_table([('Equity', f'${equity:,.2f}')])}"
-    return "No open positions"
+        rows.append(("Equity", f"${equity:,.2f}"))
+    rows.append(("Exposure", "$0.00 (0.00%)" if vault_value else "$0.00"))
+    if fraction is not None:
+        rows.append(("PnL", "$0.00 (0.00%)"))
+    rows.append(("Symbol", ""))
+    rows.append(("Current price", ""))
+    rows.append(("Entry price", ""))
+    return format_table(rows)
 
 
-def format_open_orders(orders: list[dict]) -> str:
+def format_open_orders(
+    orders: list[dict],
+    entry_price_by_coin: dict[str, float] | None = None,
+    first_entry_price_by_coin: dict[str, float] | None = None,
+) -> str:
+    """List resting orders. Distance is measured from the position's blended
+    entry price for sell orders, and from the fill that first opened the
+    position for buy orders (mirrors format_fill's convention).
+    """
     if not orders:
         return "No open orders"
+    entry_price_by_coin = entry_price_by_coin or {}
+    first_entry_price_by_coin = first_entry_price_by_coin or {}
+
     rows = []
     for o in sorted(orders, key=lambda o: float(o.get("limitPx", 0) or 0), reverse=True):
-        coin = o.get("coin", "?")
         is_buy = o.get("side") == "B"
         action = "Buy (RO)" if o.get("reduceOnly") and is_buy else ("Buy" if is_buy else "Sell")
         price = float(o.get("limitPx", 0) or 0)
         notional = price * float(o.get("sz", 0) or 0)
-        rows.append([_pair(coin), action, f"${_format_price(price)}", f"${notional:,.2f}"])
-    return format_grid(["Symbol", "Side", "Price", "Value"], rows)
+
+        coin = o.get("coin")
+        distance_ref = (
+            first_entry_price_by_coin.get(coin) if is_buy else entry_price_by_coin.get(coin)
+        )
+        distance = (
+            f"{(price - distance_ref) / distance_ref * 100:+.2f}%" if distance_ref else ""
+        )
+
+        rows.append([action, f"${_format_price(price)}", f"${notional:,.2f}", distance])
+    return format_grid(["Side", "Price", "Value", "Distance"], rows)
