@@ -174,6 +174,14 @@ def format_fill(
     fraction = _fraction(vault_value, equity)
 
     rows = []
+    if fraction is not None:
+        raw_pnl = sum(float(f.get("closedPnl") or 0) for f in fills)
+        pnl = raw_pnl * fraction
+        if abs(pnl) > 1e-9:
+            sign = "+" if pnl >= 0 else "-"
+            pct_str = f" ({pnl / equity * 100:+.2f}%)" if equity else ""
+            rows.append(("PnL", f"{sign}${abs(pnl):,.2f}{pct_str}"))
+
     if is_buy:
         if vault_value:
             before_pct = abs(start_pos) * vwap / vault_value * 100
@@ -200,14 +208,6 @@ def format_fill(
             after_value = abs(end_pos) * vwap * fraction
             now_str += f" (${after_value:,.2f})"
         rows.append(("Exposure remaining", now_str))
-
-    if fraction is not None:
-        raw_pnl = sum(float(f.get("closedPnl") or 0) for f in fills)
-        pnl = raw_pnl * fraction
-        if abs(pnl) > 1e-9:
-            sign = "+" if pnl >= 0 else "-"
-            pct_str = f" ({pnl / equity * 100:+.2f}%)" if equity else ""
-            rows.append(("PnL", f"{sign}${abs(pnl):,.2f}{pct_str}"))
 
     if closed and equity is not None:
         rows.append(("Equity", f"${equity:,.2f}"))
@@ -249,14 +249,14 @@ def format_position_status(
         value_str = f"${notional * fraction:,.2f}" if fraction is not None else "n/a"
 
         rows = []
-        if equity is not None:
-            rows.append(("Equity", f"${equity:,.2f}"))
-        rows.append(("Exposure", f"{value_str}{exposure_pct}"))
         if fraction is not None:
             pnl = float(pos.get("unrealizedPnl", 0) or 0) * fraction
             sign = "+" if pnl >= 0 else "-"
             pct_str = f" ({pnl / equity * 100:+.2f}%)" if equity else ""
             rows.append(("PnL", f"{sign}${abs(pnl):,.2f}{pct_str}"))
+        if equity is not None:
+            rows.append(("Equity", f"${equity:,.2f}"))
+        rows.append(("Exposure", f"{value_str}{exposure_pct}"))
 
         current_price = notional / abs(size) if size else 0
         entry_price = float(pos.get("entryPx", 0) or 0)
@@ -270,11 +270,11 @@ def format_position_status(
         return "\n\n".join(tables)
 
     rows = []
+    if fraction is not None:
+        rows.append(("PnL", "$0.00 (0.00%)"))
     if equity is not None:
         rows.append(("Equity", f"${equity:,.2f}"))
     rows.append(("Exposure", "$0.00 (0.00%)" if vault_value else "$0.00"))
-    if fraction is not None:
-        rows.append(("PnL", "$0.00 (0.00%)"))
     rows.append(("Symbol", ""))
     rows.append(("Current price", ""))
     rows.append(("Entry price", ""))
