@@ -235,7 +235,9 @@ def format_position_status(
     """List open positions: exposure % is relative to the whole vault, dollar
     value, PnL, and funding are scaled down to this user's share of it.
     Funding is cumulative since the position was last opened from flat, same
-    scope as the entry price it's shown alongside.
+    scope as the entry price it's shown alongside. The API's cumFunding is a
+    cost accumulator (positive = paid), the opposite of PnL's sign
+    convention, so it's negated here to display like PnL (positive = gained).
     """
     fraction = _fraction(vault_value, equity)
     tables = []
@@ -257,7 +259,7 @@ def format_position_status(
             pct_str = f" ({pnl / equity * 100:+.2f}%)" if equity else ""
             rows.append(("PnL", f"{sign}${abs(pnl):,.2f}{pct_str}"))
 
-            funding = float((pos.get("cumFunding") or {}).get("sinceOpen", 0) or 0) * fraction
+            funding = -float((pos.get("cumFunding") or {}).get("sinceOpen", 0) or 0) * fraction
             funding_sign = "+" if funding >= 0 else "-"
             funding_pct_str = f" ({funding / equity * 100:+.2f}%)" if equity else ""
             rows.append(("Funding", f"{funding_sign}${abs(funding):,.2f}{funding_pct_str}"))
