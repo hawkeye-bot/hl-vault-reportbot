@@ -127,6 +127,19 @@ def find_sell_coverage_gap(
     return None
 
 
+def has_single_buy_order_left(orders: list[dict]) -> bool:
+    """True if any coin currently has exactly one resting (non-reduce-only)
+    buy order - i.e. its DCA ladder is down to its last rung - so the poll
+    loop can switch to a faster heartbeat while that's the case.
+    """
+    buy_counts: dict[str, int] = {}
+    for o in orders:
+        if o.get("side") == "B" and not o.get("reduceOnly"):
+            coin = o.get("coin")
+            buy_counts[coin] = buy_counts.get(coin, 0) + 1
+    return any(count == 1 for count in buy_counts.values())
+
+
 def format_sell_coverage_gap(gap: dict) -> str:
     rows = [
         ("Symbol", _pair(gap["coin"])),

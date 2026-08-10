@@ -6,6 +6,7 @@ from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters
 
 from src.config import (
+    HEARTBEAT_FAST_INTERVAL_SECONDS,
     HEARTBEAT_INTERVAL_SECONDS,
     LIQUIDATION_WARN_THRESHOLD,
     POLL_INTERVAL_SECONDS,
@@ -26,6 +27,7 @@ from src.state_tracker import (
     format_sell_coverage_gap,
     format_table,
     group_fills_by_order,
+    has_single_buy_order_left,
     position_after_fills,
 )
 
@@ -190,9 +192,17 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
             elif not should_warn:
                 state.sell_coverage_warned = False
 
-            # Heartbeat: prove we're still alive if nothing else has posted in a while
+            # Heartbeat: prove we're still alive if nothing else has posted in a
+            # while. Runs on a shorter interval whenever some coin's DCA ladder
+            # is down to its last buy order, for closer monitoring near the end
+            # of a ladder.
+            heartbeat_interval = (
+                HEARTBEAT_FAST_INTERVAL_SECONDS
+                if has_single_buy_order_left(orders)
+                else HEARTBEAT_INTERVAL_SECONDS
+            )
             silence = time.monotonic() - notifier.last_sent_at
-            if silence >= HEARTBEAT_INTERVAL_SECONDS:
+            if silence >= heartbeat_interval:
                 await notifier.send(
                     f"<b>Heartbeat</b>\n"
                     f"{format_position_status(positions, vault_value, equity)}\n\n"

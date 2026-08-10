@@ -24,7 +24,7 @@ All config is env vars loaded via `.env` (see `.env.example`), read once in `src
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — bot credentials and destination chat.
 - `VAULT_ADDRESS` — the Hyperliquid vault being watched.
 - `USER_ADDRESS` — the depositor whose share of the vault is reported (equity, scaled PnL).
-- `POLL_INTERVAL_SECONDS`, `LIQUIDATION_WARN_THRESHOLD`, `HEARTBEAT_INTERVAL_SECONDS` — tunables, all with defaults.
+- `POLL_INTERVAL_SECONDS`, `LIQUIDATION_WARN_THRESHOLD`, `HEARTBEAT_INTERVAL_SECONDS`, `HEARTBEAT_FAST_INTERVAL_SECONDS` — tunables, all with defaults.
 
 Quiet hours (23:00–06:00 local time, hardcoded in `src/notifier.py`) hold all non-critical sends. Liquidation warnings and sell-coverage-mismatch alerts pass `force=True` to `TelegramNotifier.send` to bypass this; the `/status` command replies directly via `update.message.reply_text` rather than through the notifier, so it's unaffected either way.
 
@@ -44,7 +44,7 @@ Runs every `POLL_INTERVAL_SECONDS` and, per cycle:
 1. Checks margin ratio against `LIQUIDATION_WARN_THRESHOLD`, sends a one-shot warning (latched by `state.liquidation_warned` until margin recovers).
 2. Fetches fills since the last-seen timestamp, dedupes against `state.seen_fill_hashes`, groups partial fills of the same order (`group_fills_by_order`) into a single message.
 3. Checks for a long position whose resting sell orders don't cover its full size (`find_sell_coverage_gap`) — skipped for a cycle in which any fill just happened, since the trading bot needs a moment to resize orders and the positions/orders endpoints can be transiently out of sync. Latched similarly to the liquidation warning.
-4. Sends a heartbeat status message if nothing has been sent in `HEARTBEAT_INTERVAL_SECONDS`.
+4. Sends a heartbeat status message if nothing has been sent in `HEARTBEAT_INTERVAL_SECONDS` — or in `HEARTBEAT_FAST_INTERVAL_SECONDS` if any coin currently has exactly one resting buy order (`has_single_buy_order_left`), signaling its DCA ladder is down to its last rung and worth watching more closely.
 
 ### "Distance" and first-entry-price tracking
 
