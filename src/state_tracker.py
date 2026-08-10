@@ -233,7 +233,9 @@ def format_position_status(
     asset_positions: list[dict], vault_value: float | None, equity: float | None
 ) -> str:
     """List open positions: exposure % is relative to the whole vault, dollar
-    value and PnL are scaled down to this user's share of it.
+    value, PnL, and funding are scaled down to this user's share of it.
+    Funding is cumulative since the position was last opened from flat, same
+    scope as the entry price it's shown alongside.
     """
     fraction = _fraction(vault_value, equity)
     tables = []
@@ -254,6 +256,11 @@ def format_position_status(
             sign = "+" if pnl >= 0 else "-"
             pct_str = f" ({pnl / equity * 100:+.2f}%)" if equity else ""
             rows.append(("PnL", f"{sign}${abs(pnl):,.2f}{pct_str}"))
+
+            funding = float((pos.get("cumFunding") or {}).get("sinceOpen", 0) or 0) * fraction
+            funding_sign = "+" if funding >= 0 else "-"
+            funding_pct_str = f" ({funding / equity * 100:+.2f}%)" if equity else ""
+            rows.append(("Funding", f"{funding_sign}${abs(funding):,.2f}{funding_pct_str}"))
         if equity is not None:
             rows.append(("Equity", f"${equity:,.2f}"))
         rows.append(("Exposure", f"{value_str}{exposure_pct}"))
@@ -272,6 +279,7 @@ def format_position_status(
     rows = []
     if fraction is not None:
         rows.append(("PnL", "$0.00 (0.00%)"))
+        rows.append(("Funding", "$0.00 (0.00%)"))
     if equity is not None:
         rows.append(("Equity", f"${equity:,.2f}"))
     rows.append(("Exposure", "$0.00 (0.00%)" if vault_value else "$0.00"))
