@@ -258,14 +258,14 @@ def format_position_status(
             sign = "+" if pnl >= 0 else "-"
             pct_str = f" ({pnl / equity * 100:+.2f}%)" if equity else ""
             rows.append(("PnL", f"{sign}${abs(pnl):,.2f}{pct_str}"))
-
+        if equity is not None:
+            rows.append(("Equity", f"${equity:,.2f}"))
+        rows.append(("Exposure", f"{value_str}{exposure_pct}"))
+        if fraction is not None:
             funding = -float((pos.get("cumFunding") or {}).get("sinceOpen", 0) or 0) * fraction
             funding_sign = "+" if funding >= 0 else "-"
             funding_pct_str = f" ({funding / equity * 100:+.2f}%)" if equity else ""
             rows.append(("Funding", f"{funding_sign}${abs(funding):,.2f}{funding_pct_str}"))
-        if equity is not None:
-            rows.append(("Equity", f"${equity:,.2f}"))
-        rows.append(("Exposure", f"{value_str}{exposure_pct}"))
 
         current_price = notional / abs(size) if size else 0
         entry_price = float(pos.get("entryPx", 0) or 0)
@@ -281,10 +281,11 @@ def format_position_status(
     rows = []
     if fraction is not None:
         rows.append(("PnL", "$0.00 (0.00%)"))
-        rows.append(("Funding", "$0.00 (0.00%)"))
     if equity is not None:
         rows.append(("Equity", f"${equity:,.2f}"))
     rows.append(("Exposure", "$0.00 (0.00%)" if vault_value else "$0.00"))
+    if fraction is not None:
+        rows.append(("Funding", "$0.00 (0.00%)"))
     rows.append(("Symbol", ""))
     rows.append(("Current price", ""))
     rows.append(("Entry price", ""))
