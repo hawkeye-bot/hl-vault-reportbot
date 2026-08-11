@@ -123,7 +123,7 @@ def _status_message(title: str, client: HyperliquidClient, state: VaultState) ->
         f"<b>{title}</b>\n"
         f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders))}\n\n"
         f"<b>Open orders</b>\n"
-        f"{format_open_orders(orders, _entry_price_by_coin(positions), state.first_entry_price, state.order_numbers)}"
+        f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
     )
 
 
@@ -177,7 +177,6 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
     )
     startup_orders = format_open_orders(
         startup_open_orders,
-        _entry_price_by_coin(startup_positions),
         state.first_entry_price,
         state.order_numbers,
     )
@@ -293,7 +292,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                     f"<b>Heartbeat</b>\n"
                     f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders))}\n\n"
                     f"<b>Open orders</b>\n"
-                    f"{format_open_orders(orders, entry_price_by_coin, state.first_entry_price, state.order_numbers)}"
+                    f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
                 )
 
         except Exception as exc:

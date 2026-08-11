@@ -444,33 +444,27 @@ def assign_order_numbers(
 
 def format_open_orders(
     orders: list[dict],
-    entry_price_by_coin: dict[str, float] | None = None,
     first_entry_price_by_coin: dict[str, float] | None = None,
     order_numbers: dict[int, int] | None = None,
 ) -> str:
-    """List resting orders. Distance is measured from the position's blended
-    entry price for sell orders, and from the fill that first opened the
-    position for buy orders (mirrors format_fill's convention). Buy orders
-    are numbered from `order_numbers` (see assign_order_numbers); sells
-    aren't numbered.
+    """List resting buy orders (the DCA ladder) - sell orders are shown via
+    format_position_status's "Sell price" row instead. Distance is measured
+    from the fill that first opened the position (mirrors format_fill's
+    convention). Numbered via order_numbers (see assign_order_numbers).
     """
-    if not orders:
+    buy_orders = [o for o in orders if o.get("side") == "B"]
+    if not buy_orders:
         return "No open orders"
-    entry_price_by_coin = entry_price_by_coin or {}
     first_entry_price_by_coin = first_entry_price_by_coin or {}
     order_numbers = order_numbers or {}
 
     rows = []
-    for o in sorted(orders, key=lambda o: float(o.get("limitPx", 0) or 0), reverse=True):
-        is_buy = o.get("side") == "B"
-        action = "Buy (RO)" if o.get("reduceOnly") and is_buy else ("Buy" if is_buy else "Sell")
+    for o in sorted(buy_orders, key=lambda o: float(o.get("limitPx", 0) or 0), reverse=True):
+        action = "Buy (RO)" if o.get("reduceOnly") else "Buy"
         price = float(o.get("limitPx", 0) or 0)
         notional = price * float(o.get("sz", 0) or 0)
 
-        coin = o.get("coin")
-        distance_ref = (
-            first_entry_price_by_coin.get(coin) if is_buy else entry_price_by_coin.get(coin)
-        )
+        distance_ref = first_entry_price_by_coin.get(o.get("coin"))
         distance = (
             f"{(price - distance_ref) / distance_ref * 100:+.2f}%" if distance_ref else ""
         )
