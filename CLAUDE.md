@@ -58,6 +58,15 @@ Buy-side "Distance" is measured from the price of the fill that *originally open
 
 Sell fills omit "Distance" (and the fill count) entirely — `format_fill` instead reports either a full close (plus resulting equity) or the exposure remaining on a partial sell, prefixed with a bold "Sell" header so it reads unambiguously even in a notification preview.
 
+### Open-order numbering
+
+`format_open_orders`'s "#" column numbers each coin's resting buy orders 1 (closest to market, next to fill) through N (deepest); sells and reduce-only orders aren't numbered. Two problems had to be solved together, both in `assign_order_numbers`:
+
+- **Numbers must survive fills.** They're assigned once (the first time a set of oids is seen) and then frozen in `state.order_numbers`, keyed by oid - not recomputed by position every cycle - since fills always remove the nearest-to-market (lowest-numbered) order first, and a plain re-sort would renumber every survivor each time that happens.
+- **The nearest-to-market rung can fill before the bot ever sees it** (e.g. right after a restart), so a fresh assignment can't just start counting from 1 at whatever's currently open - it would then be permanently off by however many rungs already filled unseen. `assign_order_numbers` instead calibrates against `historical_order_sizes` (fill history since the position last opened from flat) to reconstruct the full rung sequence - the fill that first opened the position counts as #1, and every rung since (filled-and-gone or still open) gets the next number - so only currently-open orders end up displayed, but numbered as if every earlier rung were still visible. Real order sizes showed why this can't just use a stored count of past fills: a DCA ladder's size scales by a consistent multiplier per rung (~2.3x observed, estimated via median ratio to stay robust to one outlier pair), so a rung's absolute position is recoverable from its own size against that pattern - except the deepest rung, which is typically capped to whatever capital remains rather than continuing the multiplier, so it's simply given the number after the previous rung rather than fitted to the formula. The opening fill itself rarely fits that multiplier pattern (its ratio to itself is trivially 1), so each level is floored at "previous level + 1" - otherwise the rung right after the entry could round down onto the same number as the entry instead of following it.
+
+Fetching fill history is only worth its cost when something is actually unnumbered (`needs_fresh_numbering`), so `_update_order_numbers` (`main.py`) gates the lookback fetch behind that check rather than doing it every poll cycle. Because the assignment is calibrated from real fill history rather than derived from whatever's currently open, it's also correct again immediately after a bot restart - unlike a naive "renumber from 1" fallback would be.
+
 ### Money math conventions
 
 - "Exposure" / notional figures are relative to the **whole vault** (`vault_value` from margin summary).

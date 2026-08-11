@@ -1,5 +1,6 @@
 """Tracks vault state between polls and formats fill notifications."""
 
+import math
 from dataclasses import dataclass, field
 
 
@@ -10,6 +11,7 @@ class VaultState:
     sell_coverage_warned: bool = False
     sell_coverage_gap_streak: int = 0
     first_entry_price: dict[str, float] = field(default_factory=dict)
+    order_numbers: dict[int, int] = field(default_factory=dict)
 
 
 def _pair(coin: str) -> str:
@@ -80,6 +82,37 @@ def find_position_open_price(fills: list[dict], coin: str) -> float | None:
         if f.get("side") == "B" and float(f.get("startPosition", 0) or 0) == 0
     ]
     return float(opens[-1]["px"]) if opens else None
+
+
+def historical_order_sizes(fills: list[dict], coin: str) -> list[float]:
+    """Chronological sizes (summed per order id, so a partially-filled order
+    counts once) of every buy order that filled for `coin` since its
+    position was last opened from flat - same "since last flat" boundary as
+    find_position_open_price. Used to calibrate a DCA ladder's size pattern
+    for numbering currently-open orders, including rungs that already
+    filled before the bot ever saw them (e.g. the very first rung, which
+    can fill before the bot's first poll after a restart).
+    """
+    coin_fills = sorted(
+        (f for f in fills if f.get("coin") == coin and f.get("side") == "B"),
+        key=lambda f: f.get("time", 0),
+    )
+    open_indices = [
+        i for i, f in enumerate(coin_fills) if float(f.get("startPosition", 0) or 0) == 0
+    ]
+    if not open_indices:
+        return []
+    since_open = coin_fills[open_indices[-1] :]
+
+    sizes: dict[int, float] = {}
+    order_seq: list[int] = []
+    for f in since_open:
+        oid = f.get("oid")
+        if oid not in sizes:
+            sizes[oid] = 0.0
+            order_seq.append(oid)
+        sizes[oid] += float(f.get("sz", 0) or 0)
+    return [sizes[oid] for oid in order_seq]
 
 
 def group_fills_by_order(fills: list[dict]) -> list[list[dict]]:
@@ -306,19 +339,119 @@ def format_position_status(
     return format_table(rows)
 
 
+def needs_fresh_numbering(orders: list[dict], remembered: dict[int, int]) -> bool:
+    """True if some resting buy order isn't in `remembered` yet, meaning
+    assign_order_numbers will need historical order sizes to calibrate a
+    fresh assignment - so the caller knows it's worth fetching fill history
+    for (an expensive, rarely-needed call) rather than doing it every cycle.
+    """
+    return any(
+        o.get("side") == "B" and not o.get("reduceOnly") and o.get("oid") not in remembered
+        for o in orders
+    )
+
+
+def _multiplier(sizes: list[float]) -> float | None:
+    """Median ratio between consecutive sizes - robust to a single outlier
+    pair, which matters because the deepest (last) rung in a DCA ladder is
+    excluded by the caller before this is used, but earlier rungs could
+    still be missing/uneven."""
+    ratios = [sizes[i + 1] / sizes[i] for i in range(len(sizes) - 1) if sizes[i] > 0]
+    if not ratios:
+        return None
+    ratios.sort()
+    mid = len(ratios) // 2
+    return ratios[mid] if len(ratios) % 2 else (ratios[mid - 1] + ratios[mid]) / 2
+
+
+def assign_order_numbers(
+    orders: list[dict],
+    remembered: dict[int, int],
+    historical_sizes_by_coin: dict[str, list[float]] | None = None,
+) -> dict[int, int]:
+    """Number each coin's resting buy orders 1 (closest to market) through N
+    (deepest), fixed for as long as an order stays open - so when the
+    nearest-to-market order fills, survivors keep their existing numbers
+    instead of shifting down. Sell/reduce-only orders aren't numbered.
+
+    Numbers are only assigned once, the first time a given set of oids is
+    seen together, then carried forward unchanged via `remembered` (pass
+    the previous call's return value, e.g. `state.order_numbers`) - a plain
+    positional re-sort every cycle would renumber survivors every time the
+    nearest order fills, since that's the end orders are removed from.
+    Reassigned from scratch only when a new, not-yet-numbered order shows
+    up alongside a coin's existing ones (e.g. the ladder got replaced).
+
+    A fresh assignment is calibrated from `historical_sizes_by_coin`
+    (chronological order sizes since the position last opened from flat -
+    see historical_order_sizes), so a rung that already filled before the
+    bot ever saw it (e.g. the very first rung, which can fill before the
+    bot's first poll) still occupies its true number instead of the
+    remaining orders starting back at 1. Order sizes in a DCA ladder like
+    this one scale by a consistent multiplier per rung (~2.3x observed);
+    the deepest rung is typically capped to whatever capital remains rather
+    than continuing that multiplier, so rather than fitting it to the
+    pattern it simply gets the number after the previous rung.
+    """
+    historical_sizes_by_coin = historical_sizes_by_coin or {}
+    groups: dict[str, list[dict]] = {}
+    for o in orders:
+        if o.get("side") == "B" and not o.get("reduceOnly"):
+            groups.setdefault(o.get("coin"), []).append(o)
+
+    numbers: dict[int, int] = {}
+    for coin, group in groups.items():
+        oids = [o.get("oid") for o in group]
+        if all(oid in remembered for oid in oids):
+            for oid in oids:
+                numbers[oid] = remembered[oid]
+            continue
+
+        # Closest to market first (highest price for a buy) - the order
+        # rungs are expected to fill in, shallowest (next to fill) to
+        # deepest (last resort).
+        ranked = sorted(group, key=lambda o: float(o.get("limitPx", 0) or 0), reverse=True)
+        history = historical_sizes_by_coin.get(coin, [])
+        full_sequence = history + [float(o.get("sz", 0) or 0) for o in ranked]
+
+        multiplier = _multiplier(full_sequence[:-1])
+        base_size = full_sequence[0] if full_sequence else None
+
+        levels: list[int] = []
+        for i, size in enumerate(full_sequence):
+            floor = (levels[-1] if levels else 0) + 1
+            if i == len(full_sequence) - 1 or not base_size or not multiplier:
+                level = floor
+            else:
+                # The very first fill (the entry that opened the position)
+                # is rarely sized to fit the ladder's multiplier - its own
+                # ratio-to-itself is always 1, so without a floor it can
+                # round down onto the same level as the rung right after it.
+                level = max(round(math.log(size / base_size, multiplier)) + 1, floor)
+            levels.append(level)
+
+        for o, level in zip(ranked, levels[len(history) :]):
+            numbers[o.get("oid")] = level
+    return numbers
+
+
 def format_open_orders(
     orders: list[dict],
     entry_price_by_coin: dict[str, float] | None = None,
     first_entry_price_by_coin: dict[str, float] | None = None,
+    order_numbers: dict[int, int] | None = None,
 ) -> str:
     """List resting orders. Distance is measured from the position's blended
     entry price for sell orders, and from the fill that first opened the
-    position for buy orders (mirrors format_fill's convention).
+    position for buy orders (mirrors format_fill's convention). Buy orders
+    are numbered from `order_numbers` (see assign_order_numbers); sells
+    aren't numbered.
     """
     if not orders:
         return "No open orders"
     entry_price_by_coin = entry_price_by_coin or {}
     first_entry_price_by_coin = first_entry_price_by_coin or {}
+    order_numbers = order_numbers or {}
 
     rows = []
     for o in sorted(orders, key=lambda o: float(o.get("limitPx", 0) or 0), reverse=True):
@@ -335,5 +468,14 @@ def format_open_orders(
             f"{(price - distance_ref) / distance_ref * 100:+.2f}%" if distance_ref else ""
         )
 
-        rows.append([action, f"${_format_price(price)}", f"${notional:,.2f}", distance])
-    return format_grid(["Side", "Price", "Value", "Distance"], rows)
+        number = order_numbers.get(o.get("oid"))
+        rows.append(
+            [
+                f"#{number}" if number else "",
+                action,
+                f"${_format_price(price)}",
+                f"${notional:,.2f}",
+                distance,
+            ]
+        )
+    return format_grid(["#", "Side", "Price", "Value", "Distance"], rows)

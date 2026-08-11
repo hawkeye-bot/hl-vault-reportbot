@@ -21,6 +21,7 @@ from src.hl_client import HyperliquidClient
 from src.notifier import TelegramNotifier
 from src.state_tracker import (
     VaultState,
+    assign_order_numbers,
     find_position_open_price,
     find_sell_coverage_gap,
     format_fill,
@@ -30,6 +31,8 @@ from src.state_tracker import (
     format_table,
     group_fills_by_order,
     has_single_buy_order_left,
+    historical_order_sizes,
+    needs_fresh_numbering,
     position_after_fills,
 )
 
@@ -72,6 +75,21 @@ def _user_equity(details: dict) -> float | None:
     return float(equity_str) if equity_str is not None else None
 
 
+def _update_order_numbers(client: HyperliquidClient, state: VaultState, orders: list[dict]) -> None:
+    """Keep state.order_numbers current, fetching fill history to calibrate
+    a fresh assignment only when some order isn't numbered yet (rare - see
+    needs_fresh_numbering) rather than every cycle.
+    """
+    historical_sizes = {}
+    if needs_fresh_numbering(orders, state.order_numbers):
+        lookback_fills = client.get_fills_since(int(time.time() * 1000) - FIRST_ENTRY_LOOKBACK_MS)
+        coins = {
+            o.get("coin") for o in orders if o.get("side") == "B" and not o.get("reduceOnly")
+        }
+        historical_sizes = {coin: historical_order_sizes(lookback_fills, coin) for coin in coins}
+    state.order_numbers = assign_order_numbers(orders, state.order_numbers, historical_sizes)
+
+
 def _entry_price_by_coin(positions: list[dict]) -> dict[str, float]:
     return {
         ap["position"]["coin"]: float(ap["position"].get("entryPx", 0) or 0)
@@ -85,11 +103,12 @@ def _status_message(title: str, client: HyperliquidClient, state: VaultState) ->
     equity = _user_equity(client.get_vault_details())
     positions = client.get_open_positions()
     orders = client.get_open_orders()
+    _update_order_numbers(client, state, orders)
     return (
         f"<b>{title}</b>\n"
         f"{format_position_status(positions, vault_value, equity)}\n\n"
         f"<b>Open orders</b>\n"
-        f"{format_open_orders(orders, _entry_price_by_coin(positions), state.first_entry_price)}"
+        f"{format_open_orders(orders, _entry_price_by_coin(positions), state.first_entry_price, state.order_numbers)}"
     )
 
 
@@ -126,8 +145,26 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
         )
 
     tracking_table = format_table([("Tracking", VAULT_ADDRESS), ("User", USER_ADDRESS)])
+    startup_open_orders = client.get_open_orders()
+    # Reuses the lookback_fills already fetched above for first_entry_price,
+    # rather than _update_order_numbers's own fetch, to avoid a duplicate
+    # API call at startup.
+    startup_coins = {
+        o.get("coin")
+        for o in startup_open_orders
+        if o.get("side") == "B" and not o.get("reduceOnly")
+    }
+    startup_historical_sizes = {
+        coin: historical_order_sizes(lookback_fills, coin) for coin in startup_coins
+    }
+    state.order_numbers = assign_order_numbers(
+        startup_open_orders, state.order_numbers, startup_historical_sizes
+    )
     startup_orders = format_open_orders(
-        client.get_open_orders(), _entry_price_by_coin(startup_positions), state.first_entry_price
+        startup_open_orders,
+        _entry_price_by_coin(startup_positions),
+        state.first_entry_price,
+        state.order_numbers,
     )
     await notifier.send(
         f"<b>Monitor started</b>\n{tracking_table}\n\n"
@@ -144,6 +181,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
             equity = _user_equity(client.get_vault_details())
             orders = client.get_open_orders()
             positions = client.get_open_positions()
+            _update_order_numbers(client, state, orders)
 
             # Liquidation warning
             margin_ratio_str = margin.get("marginRatio")
@@ -240,7 +278,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                     f"<b>Heartbeat</b>\n"
                     f"{format_position_status(positions, vault_value, equity)}\n\n"
                     f"<b>Open orders</b>\n"
-                    f"{format_open_orders(orders, entry_price_by_coin, state.first_entry_price)}"
+                    f"{format_open_orders(orders, entry_price_by_coin, state.first_entry_price, state.order_numbers)}"
                 )
 
         except Exception as exc:
