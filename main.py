@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 
 STATUS_KEYBOARD = ReplyKeyboardMarkup([["/status"]], resize_keyboard=True, is_persistent=True)
 FIRST_ENTRY_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000  # 30 days
+SELL_COVERAGE_GAP_STREAK_THRESHOLD = 3  # consecutive cycles before warning
 
 
 def _sd_notify(message: str) -> None:
@@ -200,18 +201,29 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
             # resized); skip for the cycle any fill (buy or sell) happens, since
             # the trading bot needs a moment to resize/replace its sell order
             # after moving the position, and the positions/orders endpoints can
-            # also be transiently out of sync with each other right after a fill
+            # also be transiently out of sync with each other right after a fill.
+            # Beyond that, require the gap to persist for several consecutive
+            # cycles before warning, since it's often resolved by the next
+            # cycle on its own.
             gap = find_sell_coverage_gap(positions, orders)
             should_warn = gap is not None and not unseen
-            if should_warn and not state.sell_coverage_warned:
+            if should_warn:
+                state.sell_coverage_gap_streak += 1
+            else:
+                state.sell_coverage_gap_streak = 0
+                state.sell_coverage_warned = False
+
+            if (
+                should_warn
+                and state.sell_coverage_gap_streak >= SELL_COVERAGE_GAP_STREAK_THRESHOLD
+                and not state.sell_coverage_warned
+            ):
                 await notifier.send(
                     f"🚨 <b>Sell order mismatch</b>\n{format_sell_coverage_gap(gap)}\n"
                     f"<i>The bot trading this vault may be offline.</i>",
                     force=True,
                 )
                 state.sell_coverage_warned = True
-            elif not should_warn:
-                state.sell_coverage_warned = False
 
             # Heartbeat: prove we're still alive if nothing else has posted in a
             # while. Runs on a shorter interval whenever some coin's DCA ladder

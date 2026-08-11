@@ -8,6 +8,7 @@ class VaultState:
     seen_fill_hashes: set[str] = field(default_factory=set)
     liquidation_warned: bool = False
     sell_coverage_warned: bool = False
+    sell_coverage_gap_streak: int = 0
     first_entry_price: dict[str, float] = field(default_factory=dict)
 
 

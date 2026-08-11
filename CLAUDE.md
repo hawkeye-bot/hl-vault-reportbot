@@ -45,7 +45,7 @@ Runs every `POLL_INTERVAL_SECONDS` and, per cycle:
 
 1. Checks margin ratio against `LIQUIDATION_WARN_THRESHOLD`, sends a one-shot warning (latched by `state.liquidation_warned` until margin recovers).
 2. Fetches fills since the last-seen timestamp, dedupes against `state.seen_fill_hashes`, groups partial fills of the same order (`group_fills_by_order`) into a single message.
-3. Checks for a long position whose resting sell orders don't cover its full size (`find_sell_coverage_gap`) — skipped for a cycle in which any fill just happened, since the trading bot needs a moment to resize orders and the positions/orders endpoints can be transiently out of sync. Latched similarly to the liquidation warning.
+3. Checks for a long position whose resting sell orders don't cover its full size (`find_sell_coverage_gap`) — skipped for a cycle in which any fill just happened, since the trading bot needs a moment to resize orders and the positions/orders endpoints can be transiently out of sync. Only warns once the gap has been seen on `SELL_COVERAGE_GAP_STREAK_THRESHOLD` (3) consecutive cycles (`state.sell_coverage_gap_streak`), since it's often resolved by the next cycle on its own; any cycle without the gap resets the streak. Latched similarly to the liquidation warning.
 4. Sends a heartbeat status message if nothing has been sent in `HEARTBEAT_INTERVAL_SECONDS` — or in `HEARTBEAT_FAST_INTERVAL_SECONDS` if any coin currently has exactly one resting buy order (`has_single_buy_order_left`), signaling its DCA ladder is down to its last rung and worth watching more closely.
 
 ### "Distance" and first-entry-price tracking
