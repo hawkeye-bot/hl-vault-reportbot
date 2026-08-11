@@ -1,12 +1,18 @@
 from hyperliquid.info import Info
 from hyperliquid.utils import constants
 
+# The SDK's underlying `requests` session has no timeout by default, so a
+# hung connection would block the whole event loop forever (this class's
+# methods are synchronous calls made directly from async code, not offloaded
+# to a thread). Bound every request instead.
+REQUEST_TIMEOUT_SECONDS = 15
+
 
 class HyperliquidClient:
     def __init__(self, vault_address: str, user_address: str):
         self.vault_address = vault_address
         self.user_address = user_address
-        self.info = Info(constants.MAINNET_API_URL, skip_ws=True)
+        self.info = Info(constants.MAINNET_API_URL, skip_ws=True, timeout=REQUEST_TIMEOUT_SECONDS)
 
     def get_margin_summary(self) -> dict:
         state = self.info.user_state(self.vault_address)

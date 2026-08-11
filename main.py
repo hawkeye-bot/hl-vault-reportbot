@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import socket
 import time
 
 from telegram import ReplyKeyboardMarkup, Update
@@ -39,6 +41,24 @@ log = logging.getLogger(__name__)
 
 STATUS_KEYBOARD = ReplyKeyboardMarkup([["/status"]], resize_keyboard=True, is_persistent=True)
 FIRST_ENTRY_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000  # 30 days
+
+
+def _sd_notify(message: str) -> None:
+    """Minimal systemd sd_notify client (no extra dependency). No-op outside
+    a systemd unit with Type=notify and a watchdog configured - see
+    hl-vault-reportbot.service. Used to signal readiness and to kick the
+    watchdog every poll cycle, so systemd force-restarts the process if the
+    event loop ever wedges (e.g. a hung network connection) instead of it
+    silently going unresponsive forever.
+    """
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    if addr.startswith("@"):
+        addr = "\0" + addr[1:]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+        sock.connect(addr)
+        sock.sendall(message.encode())
 
 
 def _vault_value(margin: dict) -> float | None:
@@ -114,6 +134,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
         f"<b>Open orders</b>\n{startup_orders}",
         reply_markup=STATUS_KEYBOARD,
     )
+    _sd_notify("READY=1")
 
     while True:
         try:
@@ -213,6 +234,10 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
         except Exception as exc:
             log.error("Poll error: %s", exc)
 
+        # Reaching here means the cycle above didn't hang - a hard freeze
+        # (e.g. a wedged network connection) means no kick, so systemd's
+        # watchdog eventually force-restarts the process.
+        _sd_notify("WATCHDOG=1")
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 

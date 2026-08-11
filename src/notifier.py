@@ -1,10 +1,21 @@
+import asyncio
+import logging
 import time
 from datetime import datetime
 
 from telegram import Bot
 
+log = logging.getLogger(__name__)
+
 QUIET_HOURS_START = 23
 QUIET_HOURS_END = 6
+
+# Belt-and-suspenders on top of the Bot's own (usually ~5s) request timeouts:
+# if the underlying connection pool ever wedges (observed in practice - a
+# connection stuck in CLOSE_WAIT can hang a send indefinitely regardless of
+# the configured per-request timeouts), this guarantees the poll loop still
+# gets control back instead of freezing forever.
+SEND_TIMEOUT_SECONDS = 20
 
 
 def _in_quiet_hours(now: datetime | None = None) -> bool:
@@ -24,10 +35,17 @@ class TelegramNotifier:
         a forced (critical) message."""
         if not force and _in_quiet_hours():
             return
-        await self.bot.send_message(
-            chat_id=self.chat_id,
-            text=message,
-            parse_mode="HTML",
-            reply_markup=reply_markup,
-        )
+        try:
+            await asyncio.wait_for(
+                self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=message,
+                    parse_mode="HTML",
+                    reply_markup=reply_markup,
+                ),
+                timeout=SEND_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log.warning("Telegram send timed out after %ss, skipping", SEND_TIMEOUT_SECONDS)
+            return
         self.last_sent_at = time.monotonic()

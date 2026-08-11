@@ -1,0 +1,17 @@
+[Unit]
+Description=Hyperliquid vault report bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=240
+User=pi
+WorkingDirectory=/home/pi/hl-vault-reportbot
+ExecStart=/home/pi/hl-vault-reportbot/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -17,6 +17,8 @@ python main.py
 
 There are no tests, linter, or build step configured in this repo.
 
+In production this runs as the systemd unit in `deploy/hl-vault-reportbot.service` (installed at `/etc/systemd/system/`). After editing that file, reinstall with `sudo cp deploy/hl-vault-reportbot.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart hl-vault-reportbot`. Code changes also require a `systemctl restart` to take effect - there's no auto-reload.
+
 ## Configuration
 
 All config is env vars loaded via `.env` (see `.env.example`), read once in `src/config.py`:
@@ -61,3 +63,11 @@ Sell fills omit "Distance" (and the fill count) entirely — `format_fill` inste
 - "Exposure" / notional figures are relative to the **whole vault** (`vault_value` from margin summary).
 - Dollar PnL and equity are **scaled to this depositor's share** (`equity / vault_value`, called `fraction` in `state_tracker.py`), since the vault pools multiple followers' capital.
 - Telegram's `<pre>` blocks can't render bold text inline, so `format_table`/`format_grid` use fixed-width padding for alignment instead of markdown emphasis.
+
+### Hang recovery
+
+The event loop has previously frozen for hours with no crash or log output, because two lower-level clients had no bounded timeouts: the Hyperliquid SDK's `requests` session (synchronous, blocks the whole loop) and python-telegram-bot's own connection pool (observed getting stuck in `CLOSE_WAIT`, wedging both outgoing sends and the `/status` polling loop, since they share one `Bot`/connection pool). Three layers now guard against this recurring silently:
+
+1. `HyperliquidClient` sets `REQUEST_TIMEOUT_SECONDS` (`src/hl_client.py`) on the SDK's session.
+2. `TelegramNotifier.send` wraps the send in `asyncio.wait_for(..., SEND_TIMEOUT_SECONDS)` (`src/notifier.py`) as a backstop above the Bot's own per-request timeouts, since those didn't prevent the observed hang.
+3. `main.py`'s `_sd_notify` kicks the systemd watchdog (`WATCHDOG=1`) once per completed poll cycle; `deploy/hl-vault-reportbot.service` sets `Type=notify` and `WatchdogSec=240`, so if a cycle ever truly hangs (no kick), systemd force-restarts the process. This is the layer that recovers even from hangs the two timeouts above don't anticipate, since a full process restart is the only way to fully reset the network client's internal state.
