@@ -22,6 +22,7 @@ from src.notifier import TelegramNotifier
 from src.state_tracker import (
     VaultState,
     assign_order_numbers,
+    buy_order_counts,
     find_position_open_price,
     find_sell_coverage_gap,
     format_fill,
@@ -29,9 +30,11 @@ from src.state_tracker import (
     format_position_status,
     format_sell_coverage_gap,
     format_table,
+    format_unstuck_episode,
     group_fills_by_order,
     has_single_buy_order_left,
     historical_order_sizes,
+    is_loss_realizing_sell,
     needs_fresh_numbering,
     position_after_fills,
 )
@@ -96,6 +99,23 @@ def _entry_price_by_coin(positions: list[dict]) -> dict[str, float]:
         for ap in positions
         if ap.get("position", {}).get("coin")
     }
+
+
+def _update_single_buy_order_tracking(state: VaultState, orders: list[dict]) -> None:
+    """Track, per coin, how long its DCA ladder has been down to exactly one
+    resting buy order - the state a coin is in right before passivbot's
+    auto-unstuck mechanism would act on an over-extended position. Consulted
+    by format_fill when a loss-realizing sell fill comes in, to show how long
+    the ladder had been stalled beforehand.
+    """
+    counts = buy_order_counts(orders)
+    now = time.monotonic()
+    for coin in list(state.single_buy_order_since):
+        if counts.get(coin) != 1:
+            state.single_buy_order_since.pop(coin, None)
+    for coin, count in counts.items():
+        if count == 1:
+            state.single_buy_order_since.setdefault(coin, now)
 
 
 def _sell_price_by_coin(orders: list[dict]) -> dict[str, float]:
@@ -196,6 +216,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
             orders = client.get_open_orders()
             positions = client.get_open_positions()
             _update_order_numbers(client, state, orders)
+            _update_single_buy_order_tracking(state, orders)
 
             # Liquidation warning
             margin_ratio_str = margin.get("marginRatio")
@@ -232,18 +253,34 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                 if group[0].get("side") == "B" and float(group[0].get("startPosition", 0) or 0) == 0:
                     state.first_entry_price[coin] = float(group[0].get("px", 0) or 0)
 
+                stuck_since = state.single_buy_order_since.get(coin)
+                stuck_hours = (time.monotonic() - stuck_since) / 3600 if stuck_since else None
+
+                # Once a coin's first loss-realizing sell shows up, keep every
+                # fill since (any side) so later messages can show the full
+                # episode, not just this one fill
+                if is_loss_realizing_sell(group) and coin not in state.unstuck_episode_fills:
+                    state.unstuck_episode_fills[coin] = []
+                if coin in state.unstuck_episode_fills:
+                    state.unstuck_episode_fills[coin].append(group)
+
                 msg = format_fill(
                     group,
                     vault_value,
                     equity,
                     entry_price_by_coin.get(coin),
                     state.first_entry_price.get(coin),
+                    stuck_hours,
                 )
+                episode = state.unstuck_episode_fills.get(coin)
+                if episode and len(episode) > 1:
+                    msg += f"\n\n<b>Since unstuck began</b>\n{format_unstuck_episode(episode)}"
                 log.info("Fill: %s", msg)
                 await notifier.send(msg)
 
                 if position_after_fills(group) == 0:
                     state.first_entry_price.pop(coin, None)
+                    state.unstuck_episode_fills.pop(coin, None)
             if unseen:
                 last_fill_time_ms = int(time.time() * 1000)
 

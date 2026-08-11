@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -12,6 +13,8 @@ class VaultState:
     sell_coverage_gap_streak: int = 0
     first_entry_price: dict[str, float] = field(default_factory=dict)
     order_numbers: dict[int, int] = field(default_factory=dict)
+    single_buy_order_since: dict[str, float] = field(default_factory=dict)
+    unstuck_episode_fills: dict[str, list[list[dict]]] = field(default_factory=dict)
 
 
 def _pair(coin: str) -> str:
@@ -161,17 +164,22 @@ def find_sell_coverage_gap(
     return None
 
 
+def buy_order_counts(orders: list[dict]) -> dict[str, int]:
+    """Count of resting (non-reduce-only) buy orders per coin."""
+    counts: dict[str, int] = {}
+    for o in orders:
+        if o.get("side") == "B" and not o.get("reduceOnly"):
+            coin = o.get("coin")
+            counts[coin] = counts.get(coin, 0) + 1
+    return counts
+
+
 def has_single_buy_order_left(orders: list[dict]) -> bool:
     """True if any coin currently has exactly one resting (non-reduce-only)
     buy order - i.e. its DCA ladder is down to its last rung - so the poll
     loop can switch to a faster heartbeat while that's the case.
     """
-    buy_counts: dict[str, int] = {}
-    for o in orders:
-        if o.get("side") == "B" and not o.get("reduceOnly"):
-            coin = o.get("coin")
-            buy_counts[coin] = buy_counts.get(coin, 0) + 1
-    return any(count == 1 for count in buy_counts.values())
+    return any(count == 1 for count in buy_order_counts(orders).values())
 
 
 def format_sell_coverage_gap(gap: dict) -> str:
@@ -183,12 +191,24 @@ def format_sell_coverage_gap(gap: dict) -> str:
     return format_table(rows)
 
 
+def is_loss_realizing_sell(fills: list[dict]) -> bool:
+    """True if this fill group is a sell that realized a net loss - never a
+    normal take-profit for a strategy whose closes only fire above a profit
+    threshold, so it's the on-chain signature of a loss-cutting mechanism
+    (e.g. passivbot's auto-unstuck) rather than an ordinary close.
+    """
+    if fills[0].get("side") == "B":
+        return False
+    return sum(float(f.get("closedPnl") or 0) for f in fills) < 0
+
+
 def format_fill(
     fills: list[dict],
     vault_value: float | None,
     equity: float | None,
     entry_price: float | None = None,
     first_entry_price: float | None = None,
+    stuck_hours: float | None = None,
 ) -> str:
     """Format one or more partial fills of the same order as a single message.
 
@@ -201,6 +221,14 @@ def format_fill(
     closed (plus the resulting equity) or, for a partial sell, the exposure
     still remaining - "exposure added" reads oddly negative for a sell -
     and omit Distance/Fills as noise once a position is being unwound.
+
+    A sell that realizes a loss is never a normal take-profit for this
+    strategy (it only closes above its threshold), so it's flagged in the
+    header and, if `stuck_hours` is passed (how long the coin's buy ladder
+    had been down to its last resting rung beforehand - see
+    VaultState.single_buy_order_since), that context is shown too: this is
+    the on-chain signature of passivbot's auto-unstuck mechanism realizing a
+    loss on an over-extended position rather than an ordinary close.
     """
     first, last = fills[0], fills[-1]
     coin = first.get("coin", "?")
@@ -219,15 +247,18 @@ def format_fill(
     closed = not is_buy and end_pos == 0
 
     fraction = _fraction(vault_value, equity)
+    raw_pnl = sum(float(f.get("closedPnl") or 0) for f in fills)
+    is_loss = is_loss_realizing_sell(fills)
 
     rows = []
     if fraction is not None:
-        raw_pnl = sum(float(f.get("closedPnl") or 0) for f in fills)
         pnl = raw_pnl * fraction
         if abs(pnl) > 1e-9:
             sign = "+" if pnl >= 0 else "-"
             pct_str = f" ({pnl / equity * 100:+.2f}%)" if equity else ""
             rows.append(("PnL", f"{sign}${abs(pnl):,.2f}{pct_str}"))
+    if is_loss and stuck_hours:
+        rows.append(("Stuck", f"{stuck_hours:.1f}h before this"))
 
     if is_buy:
         if vault_value:
@@ -273,8 +304,38 @@ def format_fill(
             rows.append(("Fills", str(len(fills))))
 
     table = format_table(rows)
-    header = "Buy order filled" if is_buy else "Sell order filled"
+    if is_buy:
+        header = "Buy order filled"
+    elif is_loss:
+        header = "Sell order filled (loss)"
+    else:
+        header = "Sell order filled"
     return f"<b>{header}</b>\n{table}"
+
+
+def format_unstuck_episode(episode: list[list[dict]]) -> str:
+    """Table of every fill group for a coin since its first loss-realizing
+    sell (see is_loss_realizing_sell), for context on how the episode played
+    out - e.g. whether it was one trim followed by a normal profitable
+    close, or a longer string of reductions.
+    """
+    rows = []
+    for group in episode:
+        first = group[0]
+        side = "Buy" if first.get("side") == "B" else "Sell"
+        total_sz = sum(float(f.get("sz", 0)) for f in group)
+        vwap = (
+            sum(float(f.get("px", 0)) * float(f.get("sz", 0)) for f in group) / total_sz
+            if total_sz
+            else 0
+        )
+        pnl = sum(float(f.get("closedPnl") or 0) for f in group)
+        pnl_str = f"{'+' if pnl >= 0 else '-'}${abs(pnl):,.2f}" if pnl else ""
+        when = datetime.fromtimestamp(first.get("time", 0) / 1000, tz=timezone.utc).strftime(
+            "%H:%M"
+        )
+        rows.append([when, side, f"${_format_price(vwap)}", _format_price(total_sz), pnl_str])
+    return format_grid(["Time", "Side", "Price", "Size", "PnL"], rows)
 
 
 def format_position_status(

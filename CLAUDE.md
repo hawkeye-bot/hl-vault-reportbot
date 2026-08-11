@@ -69,6 +69,14 @@ Fetching fill history is only worth its cost when something is actually unnumber
 
 `format_position_status` also takes `sell_price_by_coin` (built by `main.py`'s `_sell_price_by_coin`, the nearest-to-market resting sell price per coin) and shows it as "Sell price", ordered highest-to-lowest price: Sell price, Current price, Entry price.
 
+### Loss-realizing sell detection
+
+This vault runs [passivbot](https://github.com/enarjord/passivbot), whose ordinary closes only ever trigger above a profit threshold - so any sell fill with negative `closedPnl` is never a normal take-profit; it's most likely passivbot's auto-unstuck mechanism cutting an over-extended position. `format_fill` flags this in the header ("Sell order filled (loss)" vs the normal "Sell order filled").
+
+For context on *why* it happened, `main.py`'s `_update_single_buy_order_tracking` maintains `state.single_buy_order_since` (per coin, when its buy ladder first dropped to exactly one resting order - `buy_order_counts`/`has_single_buy_order_left`'s underlying data). When a loss-realizing sell fill comes in, the poll loop looks up how long that coin had been sitting at one order left and passes it to `format_fill` as `stuck_hours`, shown as a "Stuck" row: a buy ladder that grows through several rungs, then stalls for hours with no further fills, then takes a loss on the next sell - matches the on-chain fingerprint of auto-unstuck triggering on a position whose grid ran out of room. Investigated by reconstructing full position lifecycles from `user_fills_by_time` (paginated past its 2000-record-per-call cap) and cross-referencing passivbot's `docs/config.bot.md`.
+
+`state.unstuck_episode_fills` (per coin, a list of raw fill groups) starts recording once `is_loss_realizing_sell` first fires for that coin, and every subsequent fill for it (either side) gets appended - not just further losses, since the point is to show how the episode resolves (typically one more sell that closes the remainder, often back at a profit). Once there are 2+ entries, the fill message gets a second table appended via `format_unstuck_episode`: Time/Side/Price/Size/PnL for the whole episode so far. The record is cleared when the position returns to flat, same lifecycle as `first_entry_price`.
+
 ### Money math conventions
 
 - "Exposure" / notional figures are relative to the **whole vault** (`vault_value` from margin summary).
