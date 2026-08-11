@@ -273,7 +273,8 @@ def format_fill(
             rows.append(("Fills", str(len(fills))))
 
     table = format_table(rows)
-    return table if is_buy else f"<b>Sell</b>\n{table}"
+    header = "Buy order filled" if is_buy else "Sell order filled"
+    return f"<b>{header}</b>\n{table}"
 
 
 def format_position_status(

@@ -56,7 +56,7 @@ Buy-side "Distance" is measured from the price of the fill that *originally open
 - Updated live whenever a fill opens a position from flat (`startPosition == 0`).
 - Cleared when a position returns to flat.
 
-Sell fills omit "Distance" (and the fill count) entirely — `format_fill` instead reports either a full close (plus resulting equity) or the exposure remaining on a partial sell, prefixed with a bold "Sell" header so it reads unambiguously even in a notification preview.
+Sell fills omit "Distance" (and the fill count) entirely — `format_fill` instead reports either a full close (plus resulting equity) or the exposure remaining on a partial sell. Every fill message is prefixed with a bold "Buy order filled" / "Sell order filled" header so the type reads unambiguously even in a notification preview.
 
 ### Open-order numbering
 
