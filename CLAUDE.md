@@ -67,6 +67,8 @@ Sell fills omit "Distance" (and the fill count) entirely — `format_fill` inste
 
 Fetching fill history is only worth its cost when something is actually unnumbered (`needs_fresh_numbering`), so `_update_order_numbers` (`main.py`) gates the lookback fetch behind that check rather than doing it every poll cycle. Because the assignment is calibrated from real fill history rather than derived from whatever's currently open, it's also correct again immediately after a bot restart - unlike a naive "renumber from 1" fallback would be.
 
+`format_position_status` also takes `sell_price_by_coin` (built by `main.py`'s `_sell_price_by_coin`, the nearest-to-market resting sell price per coin) and shows it as "Sell price", ordered highest-to-lowest price: Sell price, Current price, Entry price.
+
 ### Money math conventions
 
 - "Exposure" / notional figures are relative to the **whole vault** (`vault_value` from margin summary).

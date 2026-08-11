@@ -277,7 +277,10 @@ def format_fill(
 
 
 def format_position_status(
-    asset_positions: list[dict], vault_value: float | None, equity: float | None
+    asset_positions: list[dict],
+    vault_value: float | None,
+    equity: float | None,
+    sell_price_by_coin: dict[str, float] | None = None,
 ) -> str:
     """List open positions: exposure % is relative to the whole vault, dollar
     value, PnL, and funding are scaled down to this user's share of it.
@@ -287,6 +290,7 @@ def format_position_status(
     convention, so it's negated here to display like PnL (positive = gained).
     """
     fraction = _fraction(vault_value, equity)
+    sell_price_by_coin = sell_price_by_coin or {}
     tables = []
     for ap in asset_positions:
         pos = ap.get("position", {})
@@ -317,6 +321,9 @@ def format_position_status(
         current_price = notional / abs(size) if size else 0
         entry_price = float(pos.get("entryPx", 0) or 0)
         rows.append(("Symbol", f"{_pair(coin)} {side}"))
+        sell_price = sell_price_by_coin.get(coin)
+        if sell_price:
+            rows.append(("Sell price", f"${_format_price(sell_price)}"))
         rows.append(("Current price", f"${_format_price(current_price)}"))
         rows.append(("Entry price", f"${_format_price(entry_price)}"))
 

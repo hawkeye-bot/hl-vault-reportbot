@@ -98,6 +98,21 @@ def _entry_price_by_coin(positions: list[dict]) -> dict[str, float]:
     }
 
 
+def _sell_price_by_coin(orders: list[dict]) -> dict[str, float]:
+    """The nearest-to-market resting sell price per coin (lowest, since a
+    sell fills as price rises toward it), for the position status message.
+    """
+    prices: dict[str, float] = {}
+    for o in orders:
+        if o.get("side") != "A":
+            continue
+        coin = o.get("coin")
+        price = float(o.get("limitPx", 0) or 0)
+        if coin and (coin not in prices or price < prices[coin]):
+            prices[coin] = price
+    return prices
+
+
 def _status_message(title: str, client: HyperliquidClient, state: VaultState) -> str:
     vault_value = _vault_value(client.get_margin_summary())
     equity = _user_equity(client.get_vault_details())
@@ -106,7 +121,7 @@ def _status_message(title: str, client: HyperliquidClient, state: VaultState) ->
     _update_order_numbers(client, state, orders)
     return (
         f"<b>{title}</b>\n"
-        f"{format_position_status(positions, vault_value, equity)}\n\n"
+        f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders))}\n\n"
         f"<b>Open orders</b>\n"
         f"{format_open_orders(orders, _entry_price_by_coin(positions), state.first_entry_price, state.order_numbers)}"
     )
@@ -168,7 +183,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
     )
     await notifier.send(
         f"<b>Monitor started</b>\n{tracking_table}\n\n"
-        f"{format_position_status(startup_positions, startup_vault_value, startup_equity)}\n\n"
+        f"{format_position_status(startup_positions, startup_vault_value, startup_equity, _sell_price_by_coin(startup_open_orders))}\n\n"
         f"<b>Open orders</b>\n{startup_orders}",
         reply_markup=STATUS_KEYBOARD,
     )
@@ -276,7 +291,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
             if silence >= heartbeat_interval:
                 await notifier.send(
                     f"<b>Heartbeat</b>\n"
-                    f"{format_position_status(positions, vault_value, equity)}\n\n"
+                    f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders))}\n\n"
                     f"<b>Open orders</b>\n"
                     f"{format_open_orders(orders, entry_price_by_coin, state.first_entry_price, state.order_numbers)}"
                 )
