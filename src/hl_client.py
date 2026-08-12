@@ -57,11 +57,13 @@ class HyperliquidClient:
         """This user's spot wallet balances (token, total, hold, entryNtl)."""
         return self.info.spot_user_state(self.user_address).get("balances", [])
 
-    def get_spot_prices(self) -> dict[str, float]:
-        """USD mid price per spot token name (e.g. "UBTC"), derived from
-        each token's USDC-quoted spot pair - all_mids doesn't cover spot
-        tokens directly, only perps and the raw "@<index>" pair names.
-        Tokens with no direct USDC pair are omitted.
+    def _token_names_and_prices(self) -> tuple[dict[int, str], dict[str, float]]:
+        """Token index -> name, and token name -> USD mid price (from each
+        token's USDC-quoted spot pair - all_mids doesn't cover spot tokens
+        directly, only perps and the raw "@<index>" pair names). Tokens
+        with no direct USDC pair are omitted from the price dict. Shared by
+        get_spot_prices and get_earn_value, which both need to resolve raw
+        token indices to something valuable.
         """
         meta, ctxs = self.info.spot_meta_and_asset_ctxs()
         # Token list position doesn't always match its declared "index"
@@ -79,7 +81,32 @@ class HyperliquidClient:
             if mid_px is None or token_name is None:
                 continue
             prices[token_name] = float(mid_px)
+        return token_name_by_index, prices
+
+    def get_spot_prices(self) -> dict[str, float]:
+        """USD mid price per spot token name (e.g. "UBTC")."""
+        _, prices = self._token_names_and_prices()
         return prices
+
+    def get_earn_value(self) -> float:
+        """Net USD value of this user's Hyperliquid lending ("Earn")
+        positions - total supplied minus borrowed, across every token,
+        valued at each token's current price. Not wrapped by the SDK, so
+        this goes straight to the "borrowLendUserState" info type.
+        """
+        state = self.info.post(
+            "/info", {"type": "borrowLendUserState", "user": self.user_address}
+        )
+        token_name_by_index, prices = self._token_names_and_prices()
+        total = 0.0
+        for idx, entry in state.get("tokenToState", []):
+            price = prices.get(token_name_by_index.get(idx))
+            if price is None:
+                continue
+            supply_value = float((entry.get("supply") or {}).get("value", 0) or 0)
+            borrow_value = float((entry.get("borrow") or {}).get("value", 0) or 0)
+            total += (supply_value - borrow_value) * price
+        return total
 
     def get_vault_details(self) -> dict:
         """Vault details plus this user's follower state (equity, all-time PnL, etc.)."""

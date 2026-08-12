@@ -271,8 +271,8 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
     """Account-wide summary (spot + perp + every vault this address is in),
     not scoped to the one vault the rest of this bot watches: account
     value, HYPE staked (and its $ value), this depositor's equity in the
-    watched vault, non-dust spot balances (each just their $ value), and
-    PnL per period.
+    watched vault, net Hyperliquid "Earn" (lending) value, non-dust spot
+    balances (each just their $ value), and PnL per period.
     """
     client: HyperliquidClient = context.bot_data["client"]
     portfolio = client.get_portfolio()
@@ -280,11 +280,13 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
     hype_price = float(client.get_mid_prices().get("HYPE", 0) or 0)
     staked_value = staked_hype * hype_price if hype_price else None
     vault_equity = _user_equity(client.get_vault_details())
+    earn_value = client.get_earn_value()
     summary = format_account_summary(
         portfolio,
         staked_hype,
         staked_value,
         vault_equity,
+        earn_value,
         client.get_spot_balances(),
         client.get_spot_prices(),
     )
