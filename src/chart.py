@@ -42,13 +42,15 @@ def render_candles(
 ) -> bytes:
     """Render candles (as returned by HyperliquidClient.get_candles) to a PNG,
     with optional overlays: `buy_fills` (raw fill dicts within the candle
-    window) as red upside-down triangles above each fill's candle (stacked
-    upward when a candle has more than one fill), `open_buy_prices` (rung
-    number -> price, from assign_order_numbers) as dashed red lines
-    labeled with the rung, and `open_sell_prices` as dashed green lines
-    labeled "TP" - so the chart shows where the ladder has already
-    bought, where it's still resting, and where it'll take profit,
-    without opening a separate app.
+    window) as red upside-down triangles above each fill's candle - one
+    per order that filled (deduped by oid, so an order that filled across
+    several partials still gets just one triangle), stacked upward when a
+    candle has more than one order fill - `open_buy_prices` (rung number
+    -> price, from assign_order_numbers) as dashed red lines labeled with
+    the rung, and `open_sell_prices` as dashed green lines labeled "TP" -
+    so the chart shows where the ladder has already bought, where it's
+    still resting, and where it'll take profit, without opening a
+    separate app.
     """
     df = pd.DataFrame(
         [
@@ -66,13 +68,25 @@ def render_candles(
 
     addplots = []
     if buy_fills:
+        # One triangle per resting order that filled, not per partial fill
+        # of it - several partials of the same order (same oid) collapse
+        # to a single representative fill before anything else happens.
+        seen_oids = set()
+        deduped_fills = []
+        for f in buy_fills:
+            oid = f.get("oid")
+            if oid in seen_oids:
+                continue
+            seen_oids.add(oid)
+            deduped_fills.append(f)
+
         # Marked with an upside-down triangle above the candle's high (not
         # at the exact fill price, and not overlapping the candle) so it
         # reads as a "bought here" flag pointing down at the candle. Two or
-        # more fills landing in the same candle stack their triangles
+        # more orders filling in the same candle stack their triangles
         # upward rather than overwriting each other.
         positions = []
-        for f in buy_fills:
+        for f in deduped_fills:
             ts = pd.to_datetime(int(f.get("time", 0)), unit="ms")
             pos = df.index.get_indexer([ts], method="nearest")[0]
             if pos >= 0:
