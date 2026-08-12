@@ -53,6 +53,34 @@ class HyperliquidClient:
         the vault or this user."""
         return self.info.all_mids()
 
+    def get_spot_balances(self) -> list[dict]:
+        """This user's spot wallet balances (token, total, hold, entryNtl)."""
+        return self.info.spot_user_state(self.user_address).get("balances", [])
+
+    def get_spot_prices(self) -> dict[str, float]:
+        """USD mid price per spot token name (e.g. "UBTC"), derived from
+        each token's USDC-quoted spot pair - all_mids doesn't cover spot
+        tokens directly, only perps and the raw "@<index>" pair names.
+        Tokens with no direct USDC pair are omitted.
+        """
+        meta, ctxs = self.info.spot_meta_and_asset_ctxs()
+        # Token list position doesn't always match its declared "index"
+        # (it's sparse - e.g. 485 tokens but indices up to 858), so this
+        # must be looked up by index, not by position.
+        token_name_by_index = {t["index"]: t["name"] for t in meta["tokens"]}
+        ctx_by_pair_name = {c["coin"]: c for c in ctxs}
+        prices = {"USDC": 1.0}
+        for pair in meta["universe"]:
+            base_idx, quote_idx = pair["tokens"]
+            if quote_idx != 0:  # only USDC-quoted pairs give a direct USD price
+                continue
+            mid_px = ctx_by_pair_name.get(pair["name"], {}).get("midPx")
+            token_name = token_name_by_index.get(base_idx)
+            if mid_px is None or token_name is None:
+                continue
+            prices[token_name] = float(mid_px)
+        return prices
+
     def get_vault_details(self) -> dict:
         """Vault details plus this user's follower state (equity, all-time PnL, etc.)."""
         try:

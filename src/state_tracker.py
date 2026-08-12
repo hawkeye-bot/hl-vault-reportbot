@@ -395,6 +395,33 @@ def format_account_summary(
     return "\n\n".join(part for part in (header, grid) if part)
 
 
+def format_spot_balances(
+    balances: list[dict], prices: dict[str, float], min_value: float = 3.0
+) -> str:
+    """Table of spot wallet balances worth at least `min_value`, valued via
+    `prices` (coin -> USD price, from HyperliquidClient.get_spot_prices).
+    Dust and untradeable/no-price tokens are dropped so a wallet with many
+    near-zero balances doesn't clutter the summary; the rest are sorted by
+    value, highest first.
+    """
+    entries = []
+    for b in balances:
+        coin = b.get("coin")
+        total = float(b.get("total", 0) or 0)
+        price = prices.get(coin)
+        if not coin or total <= 0 or price is None:
+            continue
+        value = total * price
+        if value < min_value:
+            continue
+        entries.append((coin, total, value))
+    if not entries:
+        return ""
+    entries.sort(key=lambda e: -e[2])
+    rows = [[coin, _format_price(total), f"${value:,.2f}"] for coin, total, value in entries]
+    return format_grid(["Coin", "Amount", "Value"], rows)
+
+
 def format_position_status(
     asset_positions: list[dict],
     vault_value: float | None,
