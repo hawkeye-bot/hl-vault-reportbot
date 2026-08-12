@@ -31,6 +31,7 @@ _STYLE = mpf.make_mpf_style(
 _BUY_COLOR = "#f85149"
 _SELL_COLOR = "#3fb950"
 _CURRENT_PRICE_COLOR = "#f0883e"
+_ENTRY_PRICE_COLOR = "#58a6ff"
 
 
 def render_candles(
@@ -40,6 +41,7 @@ def render_candles(
     buy_fills: list[dict] | None = None,
     open_buy_prices: dict[int, float] | None = None,
     open_sell_prices: list[float] | None = None,
+    entry_price: float | None = None,
 ) -> bytes:
     """Render candles (as returned by HyperliquidClient.get_candles) to a PNG,
     with optional overlays: `buy_fills` (raw fill dicts within the candle
@@ -52,7 +54,9 @@ def render_candles(
     so the chart shows where the ladder has already bought, where it's
     still resting, and where it'll take profit, without opening a
     separate app. The last candle's close is always drawn as a dotted
-    orange "Now" line, distinct from the dashed order lines.
+    orange "Now" line, and `entry_price` (the position's blended average
+    entry) as a dotted blue "Entry" line - both dotted rather than dashed
+    to stay visually distinct from the order lines.
     """
     df = pd.DataFrame(
         [
@@ -137,6 +141,10 @@ def render_candles(
         hlines_prices.append(current_price)
         hlines_colors.append(_CURRENT_PRICE_COLOR)
         hlines_styles.append(":")
+    if entry_price is not None:
+        hlines_prices.append(entry_price)
+        hlines_colors.append(_ENTRY_PRICE_COLOR)
+        hlines_styles.append(":")
     hlines = (
         dict(hlines=hlines_prices, colors=hlines_colors, linestyle=hlines_styles, linewidths=1.0)
         if hlines_prices
@@ -183,6 +191,7 @@ def render_candles(
             *(open_buy_prices or {}).values(),
             *(open_sell_prices or []),
             *([current_price] if current_price is not None else []),
+            *([entry_price] if entry_price is not None else []),
         ]
         if candle_low - nearby_span <= p <= candle_high + nearby_span
     ]
@@ -213,6 +222,8 @@ def render_candles(
         label(price, "TP", _SELL_COLOR)
     if current_price is not None:
         label(current_price, "Now", _CURRENT_PRICE_COLOR)
+    if entry_price is not None:
+        label(entry_price, "Entry", _ENTRY_PRICE_COLOR)
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")

@@ -155,10 +155,12 @@ async def _render_chart(
     coin: str,
     orders: list[dict],
     order_numbers: dict[int, int],
+    entry_price_by_coin: dict[str, float] | None = None,
 ) -> bytes | None:
-    """Chart for `coin` with fills, resting buy rungs, and resting sell(s)
-    overlaid - see render_candles. Buy fills are limited to the chart's own
-    lookback window, matching what's actually visible on it.
+    """Chart for `coin` with fills, resting buy rungs, resting sell(s), and
+    the position's entry price overlaid - see render_candles. Buy fills
+    are limited to the chart's own lookback window, matching what's
+    actually visible on it.
     """
     try:
         candles = client.get_candles(coin, CHART_INTERVAL, CHART_LOOKBACK_MS)
@@ -177,8 +179,15 @@ async def _render_chart(
             for o in orders
             if o.get("coin") == coin and o.get("side") == "A"
         ]
+        entry_price = (entry_price_by_coin or {}).get(coin)
         return render_candles(
-            candles, coin, CHART_INTERVAL, buy_fills, open_buy_prices, open_sell_prices
+            candles,
+            coin,
+            CHART_INTERVAL,
+            buy_fills,
+            open_buy_prices,
+            open_sell_prices,
+            entry_price,
         )
     except Exception as exc:
         log.warning("Chart render failed for %s: %s", coin, exc)
@@ -203,13 +212,18 @@ async def _send_status(
     caption in a single message.
     """
     coins = _active_coins(positions)
-    chart = await _render_chart(client, coins[0], orders, order_numbers) if coins else None
+    entry_price_by_coin = _entry_price_by_coin(positions)
+    chart = (
+        await _render_chart(client, coins[0], orders, order_numbers, entry_price_by_coin)
+        if coins
+        else None
+    )
     if chart:
         await send_photo(chart, text)
     else:
         await send_text(text)
     for coin in coins[1:]:
-        extra = await _render_chart(client, coin, orders, order_numbers)
+        extra = await _render_chart(client, coin, orders, order_numbers, entry_price_by_coin)
         if extra:
             await send_photo(extra, "")
 
@@ -411,7 +425,9 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                 # since that's what a DCA ladder filling is really about
                 chart = None
                 if group[0].get("side") == "B":
-                    chart = await _render_chart(client, coin, orders, state.order_numbers)
+                    chart = await _render_chart(
+                        client, coin, orders, state.order_numbers, entry_price_by_coin
+                    )
 
                 log.info("Fill: %s", msg)
                 if chart:
