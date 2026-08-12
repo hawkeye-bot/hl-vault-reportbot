@@ -147,10 +147,36 @@ def _active_coins(positions: list[dict]) -> list[str]:
     return coins
 
 
-async def _render_chart(client: HyperliquidClient, coin: str) -> bytes | None:
+async def _render_chart(
+    client: HyperliquidClient,
+    coin: str,
+    orders: list[dict],
+    order_numbers: dict[int, int],
+) -> bytes | None:
+    """Chart for `coin` with fills, resting buy rungs, and resting sell(s)
+    overlaid - see render_candles. Buy fills are limited to the chart's own
+    lookback window, matching what's actually visible on it.
+    """
     try:
         candles = client.get_candles(coin, CHART_INTERVAL, CHART_LOOKBACK_MS)
-        return render_candles(candles, coin, CHART_INTERVAL)
+        recent_fills = client.get_fills_since(int(time.time() * 1000) - CHART_LOOKBACK_MS)
+        buy_fills = [f for f in recent_fills if f.get("coin") == coin and f.get("side") == "B"]
+        open_buy_prices = {
+            order_numbers[o.get("oid")]: float(o.get("limitPx", 0) or 0)
+            for o in orders
+            if o.get("coin") == coin
+            and o.get("side") == "B"
+            and not o.get("reduceOnly")
+            and o.get("oid") in order_numbers
+        }
+        open_sell_prices = [
+            float(o.get("limitPx", 0) or 0)
+            for o in orders
+            if o.get("coin") == coin and o.get("side") == "A"
+        ]
+        return render_candles(
+            candles, coin, CHART_INTERVAL, buy_fills, open_buy_prices, open_sell_prices
+        )
     except Exception as exc:
         log.warning("Chart render failed for %s: %s", coin, exc)
         return None
@@ -160,6 +186,8 @@ async def _send_status(
     client: HyperliquidClient,
     text: str,
     positions: list[dict],
+    orders: list[dict],
+    order_numbers: dict[int, int],
     send_text,
     send_photo,
 ) -> None:
@@ -172,20 +200,20 @@ async def _send_status(
     caption in a single message.
     """
     coins = _active_coins(positions)
-    chart = await _render_chart(client, coins[0]) if coins else None
+    chart = await _render_chart(client, coins[0], orders, order_numbers) if coins else None
     if chart:
         await send_photo(chart, text)
     else:
         await send_text(text)
     for coin in coins[1:]:
-        extra = await _render_chart(client, coin)
+        extra = await _render_chart(client, coin, orders, order_numbers)
         if extra:
             await send_photo(extra, "")
 
 
 def _status_message(
     title: str, client: HyperliquidClient, state: VaultState
-) -> tuple[str, list[dict]]:
+) -> tuple[str, list[dict], list[dict]]:
     vault_value = _vault_value(client.get_margin_summary())
     equity = _user_equity(client.get_vault_details())
     positions = client.get_open_positions()
@@ -197,13 +225,13 @@ def _status_message(
         f"<b>Open orders</b>\n"
         f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
     )
-    return text, positions
+    return text, positions, orders
 
 
 async def handle_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client: HyperliquidClient = context.bot_data["client"]
     state: VaultState = context.bot_data["state"]
-    text, positions = _status_message("Status", client, state)
+    text, positions, orders = _status_message("Status", client, state)
 
     async def send_text(t: str) -> None:
         await update.message.reply_text(t, parse_mode="HTML", reply_markup=STATUS_KEYBOARD)
@@ -217,7 +245,9 @@ async def handle_status_command(update: Update, context: ContextTypes.DEFAULT_TY
             show_caption_above_media=True,
         )
 
-    await _send_status(client, text, positions, send_text, send_photo)
+    await _send_status(
+        client, text, positions, orders, state.order_numbers, send_text, send_photo
+    )
 
 
 async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state: VaultState) -> None:
@@ -353,11 +383,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                 # since that's what a DCA ladder filling is really about
                 chart = None
                 if group[0].get("side") == "B":
-                    try:
-                        candles = client.get_candles(coin, CHART_INTERVAL, CHART_LOOKBACK_MS)
-                        chart = render_candles(candles, coin, CHART_INTERVAL)
-                    except Exception as exc:
-                        log.warning("Chart render failed for %s: %s", coin, exc)
+                    chart = await _render_chart(client, coin, orders, state.order_numbers)
 
                 log.info("Fill: %s", msg)
                 if chart:
@@ -422,6 +448,8 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                     client,
                     heartbeat_text,
                     positions,
+                    orders,
+                    state.order_numbers,
                     notifier.send,
                     functools.partial(notifier.send_photo, caption_above=True),
                 )
