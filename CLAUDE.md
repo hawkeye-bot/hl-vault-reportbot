@@ -80,9 +80,11 @@ For context on *why* it happened, `main.py`'s `_update_single_buy_order_tracking
 
 `state.unstuck_episode_fills` (per coin, a list of raw fill groups) starts recording once `is_loss_realizing_sell` first fires for that coin, and every subsequent fill for it (either side) gets appended - not just further losses, since the point is to show how the episode resolves (typically one more sell that closes the remainder, often back at a profit). Once there are 2+ entries, the fill message gets a second table appended via `format_unstuck_episode`: Time/Side/Price/Size/PnL for the whole episode so far. The record is cleared when the position returns to flat, same lifecycle as `first_entry_price`.
 
-### Chart on buy fills
+### Charts
 
 Every buy fill message is sent as a photo (`notifier.send_photo`) with the usual table as its caption, rather than as plain text: `main.py` fetches `CHART_LOOKBACK_MS` (12h) of `CHART_INTERVAL` (15m) candles via `client.get_candles` and renders them with `render_candles`. Sell fills are unaffected (still plain text) - the chart is meant to give a feel for what the market's been doing around a DCA entry, not general market commentary. Chart fetch/render is wrapped in try/except and falls back to a plain `notifier.send` on failure, so a candle-API hiccup or render error doesn't drop the fill notification.
+
+`/status` and the heartbeat use `_send_status` (`main.py`), which attaches the first open position's chart as that *same* message's photo caption - one message, not a message plus a trailing photo - falling back to text-only if there's no position or the chart fails to render. Both pass `caption_above=True`/`show_caption_above_media=True` so the text renders first and the chart lands at the bottom, unlike the buy-fill case (`notifier.send_photo`'s default `caption_above=False`) where the chart is the point and sits above the table. `_active_coins` finds which coin(s) currently have an open position; any position beyond the first gets its own caption-less follow-up photo, since a single Telegram message can only have one photo carry a caption. `/status` sends via `update.message.reply_photo`/`reply_text` directly (bypasses the notifier/quiet-hours, same reasoning as the text-only case used to); the heartbeat uses `notifier.send`/`send_photo` so it's held during quiet hours like the rest of the heartbeat.
 
 ### Money math conventions
 

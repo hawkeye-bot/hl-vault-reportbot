@@ -51,10 +51,16 @@ class TelegramNotifier:
         self.last_sent_at = time.monotonic()
 
     async def send_photo(
-        self, photo: bytes, caption: str, reply_markup=None, force: bool = False
+        self,
+        photo: bytes,
+        caption: str = "",
+        reply_markup=None,
+        force: bool = False,
+        caption_above: bool = False,
     ) -> None:
-        """Send a photo with a caption, subject to the same quiet-hours and
-        timeout handling as send()."""
+        """Send a photo, optionally with a caption, subject to the same
+        quiet-hours and timeout handling as send(). `caption_above` puts the
+        caption above the photo instead of Telegram's default of below."""
         if not force and _in_quiet_hours():
             return
         try:
@@ -65,6 +71,7 @@ class TelegramNotifier:
                     caption=caption,
                     parse_mode="HTML",
                     reply_markup=reply_markup,
+                    show_caption_above_media=caption_above,
                 ),
                 timeout=SEND_TIMEOUT_SECONDS,
             )

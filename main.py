@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 import os
 import socket
@@ -136,26 +137,87 @@ def _sell_price_by_coin(orders: list[dict]) -> dict[str, float]:
     return prices
 
 
-def _status_message(title: str, client: HyperliquidClient, state: VaultState) -> str:
+def _active_coins(positions: list[dict]) -> list[str]:
+    coins = []
+    for ap in positions:
+        pos = ap.get("position", {})
+        coin = pos.get("coin")
+        if coin and float(pos.get("szi", 0) or 0) != 0:
+            coins.append(coin)
+    return coins
+
+
+async def _render_chart(client: HyperliquidClient, coin: str) -> bytes | None:
+    try:
+        candles = client.get_candles(coin, CHART_INTERVAL, CHART_LOOKBACK_MS)
+        return render_candles(candles, coin, CHART_INTERVAL)
+    except Exception as exc:
+        log.warning("Chart render failed for %s: %s", coin, exc)
+        return None
+
+
+async def _send_status(
+    client: HyperliquidClient,
+    text: str,
+    positions: list[dict],
+    send_text,
+    send_photo,
+) -> None:
+    """Send a status/heartbeat-style message. If there's an open position,
+    its chart is attached to the *same* message (as the photo's caption,
+    matching how buy fills work) rather than as a trailing separate
+    message; falls back to text-only if there's no position or the chart
+    fails to render. Any further positions beyond the first each get their
+    own, caption-less follow-up chart, since only one photo can carry the
+    caption in a single message.
+    """
+    coins = _active_coins(positions)
+    chart = await _render_chart(client, coins[0]) if coins else None
+    if chart:
+        await send_photo(chart, text)
+    else:
+        await send_text(text)
+    for coin in coins[1:]:
+        extra = await _render_chart(client, coin)
+        if extra:
+            await send_photo(extra, "")
+
+
+def _status_message(
+    title: str, client: HyperliquidClient, state: VaultState
+) -> tuple[str, list[dict]]:
     vault_value = _vault_value(client.get_margin_summary())
     equity = _user_equity(client.get_vault_details())
     positions = client.get_open_positions()
     orders = client.get_open_orders()
     _update_order_numbers(client, state, orders)
-    return (
+    text = (
         f"<b>{title}</b>\n"
         f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders))}\n\n"
         f"<b>Open orders</b>\n"
         f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
     )
+    return text, positions
 
 
 async def handle_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     client: HyperliquidClient = context.bot_data["client"]
     state: VaultState = context.bot_data["state"]
-    await update.message.reply_text(
-        _status_message("Status", client, state), parse_mode="HTML", reply_markup=STATUS_KEYBOARD
-    )
+    text, positions = _status_message("Status", client, state)
+
+    async def send_text(t: str) -> None:
+        await update.message.reply_text(t, parse_mode="HTML", reply_markup=STATUS_KEYBOARD)
+
+    async def send_photo(photo: bytes, caption: str) -> None:
+        await update.message.reply_photo(
+            photo,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=STATUS_KEYBOARD,
+            show_caption_above_media=True,
+        )
+
+    await _send_status(client, text, positions, send_text, send_photo)
 
 
 async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state: VaultState) -> None:
@@ -350,11 +412,18 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
             )
             silence = time.monotonic() - notifier.last_sent_at
             if silence >= heartbeat_interval:
-                await notifier.send(
+                heartbeat_text = (
                     f"<b>Heartbeat</b>\n"
                     f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders))}\n\n"
                     f"<b>Open orders</b>\n"
                     f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
+                )
+                await _send_status(
+                    client,
+                    heartbeat_text,
+                    positions,
+                    notifier.send,
+                    functools.partial(notifier.send_photo, caption_above=True),
                 )
 
         except Exception as exc:
