@@ -209,6 +209,7 @@ def format_fill(
     entry_price: float | None = None,
     first_entry_price: float | None = None,
     stuck_hours: float | None = None,
+    order_number: int | None = None,
 ) -> str:
     """Format one or more partial fills of the same order as a single message.
 
@@ -217,10 +218,13 @@ def format_fill(
 
     Buys report exposure added/now plus Distance (from the price that first
     opened the position, not the blended average, which shifts with every
-    DCA) and a fill count. Sells instead report either that the position was
-    closed (plus the resulting equity) or, for a partial sell, the exposure
-    still remaining - "exposure added" reads oddly negative for a sell -
-    and omit Distance/Fills as noise once a position is being unwound.
+    DCA) and a fill count, plus an "Order #" row (the rung this order held
+    in format_open_orders/assign_order_numbers, if it's still known) so
+    it's clear which rung just filled. Sells instead report either that the
+    position was closed (plus the resulting equity)
+    or, for a partial sell, the exposure still remaining - "exposure added"
+    reads oddly negative for a sell - and omit Distance/Fills as noise once
+    a position is being unwound.
 
     A sell that realizes a loss is never a normal take-profit for this
     strategy (it only closes above its threshold), so it's flagged in the
@@ -291,6 +295,8 @@ def format_fill(
         rows.append(("Equity", f"${equity:,.2f}"))
 
     rows.append(("Symbol", f"{_pair(coin)} {action}"))
+    if is_buy and order_number:
+        rows.append(("Order #", str(order_number)))
     rows.append(("Price", f"${_format_price(vwap)}"))
     if entry_price:
         rows.append(("Entry price", f"${_format_price(entry_price)}"))

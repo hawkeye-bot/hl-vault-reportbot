@@ -67,6 +67,8 @@ Sell fills omit "Distance" (and the fill count) entirely — `format_fill` inste
 
 Fetching fill history is only worth its cost when something is actually unnumbered (`needs_fresh_numbering`), so `_update_order_numbers` (`main.py`) gates the lookback fetch behind that check rather than doing it every poll cycle. Because the assignment is calibrated from real fill history rather than derived from whatever's currently open, it's also correct again immediately after a bot restart - unlike a naive "renumber from 1" fallback would be.
 
+A filled order is already gone from `orders` by the time a fill shows up, so `_update_order_numbers` (which only keeps numbers for currently-open oids) would have already dropped it before the fill gets processed. `main.py`'s poll loop snapshots `state.order_numbers` into `prior_order_numbers` *before* calling `_update_order_numbers` each cycle, so a buy fill message can still look up which rung just filled and show it in the Symbol row (`format_fill`'s `order_number` param) - e.g. "CRVUSDC Buy #4".
+
 `format_position_status` also takes `sell_price_by_coin` (built by `main.py`'s `_sell_price_by_coin`, the nearest-to-market resting sell price per coin) and shows it as "Sell price", ordered highest-to-lowest price: Sell price, Current price, Entry price.
 
 ### Loss-realizing sell detection

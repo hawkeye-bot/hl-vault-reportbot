@@ -215,6 +215,11 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
             equity = _user_equity(client.get_vault_details())
             orders = client.get_open_orders()
             positions = client.get_open_positions()
+            # A filled order is already gone from `orders` by the time we see
+            # it, so it won't be in the numbers _update_order_numbers is about
+            # to (re)compute - snapshot the prior numbering first so a fill
+            # message can still report which rung just filled.
+            prior_order_numbers = dict(state.order_numbers)
             _update_order_numbers(client, state, orders)
             _update_single_buy_order_tracking(state, orders)
 
@@ -255,6 +260,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
 
                 stuck_since = state.single_buy_order_since.get(coin)
                 stuck_hours = (time.monotonic() - stuck_since) / 3600 if stuck_since else None
+                order_number = prior_order_numbers.get(group[0].get("oid"))
 
                 # Once a coin's first loss-realizing sell shows up, keep every
                 # fill since (any side) so later messages can show the full
@@ -271,6 +277,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                     entry_price_by_coin.get(coin),
                     state.first_entry_price.get(coin),
                     stuck_hours,
+                    order_number,
                 )
                 episode = state.unstuck_episode_fills.get(coin)
                 if episode and len(episode) > 1:
