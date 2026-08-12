@@ -161,14 +161,35 @@ def render_candles(
     volume_ax.set_ylabel("")
     volume_ax.set_yticklabels([])
 
+    # mplfinance plots candles at integer x-positions 0..len(df)-1 and adds
+    # its own ~7% margin on either side by default; tighten every panel to
+    # just half a candle-width of margin (enough that the outermost
+    # candles aren't clipped) instead of that empty left/right gap.
+    for ax in axes:
+        ax.set_xlim(-0.5, len(df) - 0.5)
+
     # Order lines can sit far from the candle action (a deep DCA rung, or a
     # take-profit well above it), which would otherwise stretch the axis
-    # and squash the candles into an unreadable band. Keep the visible
-    # range anchored to the candles themselves instead - order lines
-    # outside it just render off the edge rather than resizing the chart.
+    # and squash the candles into an unreadable band. Only order lines
+    # within "nearby_span" of the candle range count as close enough to
+    # show; the axis is then fit tightly to whatever that actually
+    # includes (candles plus any qualifying lines), not padded out to a
+    # fixed margin regardless of whether anything is there to show.
     candle_low, candle_high = df["Low"].min(), df["High"].max()
-    candle_pad = (candle_high - candle_low) * 0.15
-    visible_low, visible_high = candle_low - candle_pad, candle_high + candle_pad
+    nearby_span = (candle_high - candle_low) * 0.5
+    nearby_prices = [
+        p
+        for p in [
+            *(open_buy_prices or {}).values(),
+            *(open_sell_prices or []),
+            *([current_price] if current_price is not None else []),
+        ]
+        if candle_low - nearby_span <= p <= candle_high + nearby_span
+    ]
+    content_low = min([candle_low, *nearby_prices])
+    content_high = max([candle_high, *nearby_prices])
+    breathing_room = (content_high - content_low) * 0.03
+    visible_low, visible_high = content_low - breathing_room, content_high + breathing_room
     price_ax.set_ylim(visible_low, visible_high)
     for ax in axes:
         ax.tick_params(axis="x", labelbottom=False, labeltop=False)
