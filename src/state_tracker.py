@@ -349,16 +349,20 @@ def format_account_summary(
     staked_hype: float | None = None,
     staked_value: float | None = None,
     vault_equity: float | None = None,
+    spot_balances: list[dict] | None = None,
+    spot_prices: dict[str, float] | None = None,
+    spot_min_value: float = 3.0,
 ) -> str:
     """Render an account-wide summary: current account value, amount
-    staked (in HYPE, and its $ value just below), and this depositor's
-    equity in the vault the rest of the bot watches, then PnL per period
-    (day/week/month/allTime - no volume, that's not the point here).
-    `portfolio` is the raw list of (period, data) tuples from
-    HyperliquidClient.get_portfolio. Only the combined (spot+perp+vault)
-    periods are shown - the "perpX" variants are skipped since this
-    account trades through a vault rather than directly on its own perp
-    book, so they'd read as ~$0 and just be noise.
+    staked (in HYPE, and its $ value just below), this depositor's equity
+    in the vault the rest of the bot watches, non-dust spot balances (just
+    their $ value, one row per coin), then PnL per period (day/week/month/
+    allTime - no volume, that's not the point here). `portfolio` is the
+    raw list of (period, data) tuples from HyperliquidClient.get_portfolio.
+    Only the combined (spot+perp+vault) periods are shown - the "perpX"
+    variants are skipped since this account trades through a vault rather
+    than directly on its own perp book, so they'd read as ~$0 and just be
+    noise.
     """
     periods = {period: data for period, data in portfolio}
     period_labels = [("day", "Day"), ("week", "Week"), ("month", "Month"), ("allTime", "All time")]
@@ -376,6 +380,26 @@ def format_account_summary(
         header_rows.append(("Staked value", f"${staked_value:,.2f}"))
     if vault_equity is not None:
         header_rows.append(("Vault equity", f"${vault_equity:,.2f}"))
+
+    # Dust and untradeable/no-price tokens are dropped so a wallet with
+    # many near-zero balances doesn't clutter the summary; the rest are
+    # sorted by value, highest first, right under the other balances.
+    spot_prices = spot_prices or {}
+    spot_holdings = []
+    for b in spot_balances or []:
+        coin = b.get("coin")
+        total = float(b.get("total", 0) or 0)
+        price = spot_prices.get(coin)
+        if not coin or total <= 0 or price is None:
+            continue
+        value = total * price
+        if value < spot_min_value:
+            continue
+        spot_holdings.append((coin, value))
+    spot_holdings.sort(key=lambda h: -h[1])
+    for coin, value in spot_holdings:
+        header_rows.append((coin, f"${value:,.2f}"))
+
     header = format_table(header_rows) if header_rows else ""
 
     grid_rows = []
@@ -393,33 +417,6 @@ def format_account_summary(
     grid = format_grid(["Period", "PnL"], grid_rows) if grid_rows else ""
 
     return "\n\n".join(part for part in (header, grid) if part)
-
-
-def format_spot_balances(
-    balances: list[dict], prices: dict[str, float], min_value: float = 3.0
-) -> str:
-    """Table of spot wallet balances worth at least `min_value`, valued via
-    `prices` (coin -> USD price, from HyperliquidClient.get_spot_prices).
-    Dust and untradeable/no-price tokens are dropped so a wallet with many
-    near-zero balances doesn't clutter the summary; the rest are sorted by
-    value, highest first.
-    """
-    entries = []
-    for b in balances:
-        coin = b.get("coin")
-        total = float(b.get("total", 0) or 0)
-        price = prices.get(coin)
-        if not coin or total <= 0 or price is None:
-            continue
-        value = total * price
-        if value < min_value:
-            continue
-        entries.append((coin, total, value))
-    if not entries:
-        return ""
-    entries.sort(key=lambda e: -e[2])
-    rows = [[coin, _format_price(total), f"${value:,.2f}"] for coin, total, value in entries]
-    return format_grid(["Coin", "Amount", "Value"], rows)
 
 
 def format_position_status(

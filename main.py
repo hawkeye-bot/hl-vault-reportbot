@@ -30,7 +30,6 @@ from src.state_tracker import (
     format_fill,
     format_open_orders,
     format_account_summary,
-    format_spot_balances,
     format_position_status,
     format_sell_coverage_gap,
     format_table,
@@ -258,7 +257,8 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
     """Account-wide summary (spot + perp + every vault this address is in),
     not scoped to the one vault the rest of this bot watches: account
     value, HYPE staked (and its $ value), this depositor's equity in the
-    watched vault, PnL per period, and non-dust spot balances.
+    watched vault, non-dust spot balances (each just their $ value), and
+    PnL per period.
     """
     client: HyperliquidClient = context.bot_data["client"]
     portfolio = client.get_portfolio()
@@ -266,13 +266,15 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
     hype_price = float(client.get_mid_prices().get("HYPE", 0) or 0)
     staked_value = staked_hype * hype_price if hype_price else None
     vault_equity = _user_equity(client.get_vault_details())
-    text = (
-        f"<b>Account</b>\n"
-        f"{format_account_summary(portfolio, staked_hype, staked_value, vault_equity)}"
+    summary = format_account_summary(
+        portfolio,
+        staked_hype,
+        staked_value,
+        vault_equity,
+        client.get_spot_balances(),
+        client.get_spot_prices(),
     )
-    spot_summary = format_spot_balances(client.get_spot_balances(), client.get_spot_prices())
-    if spot_summary:
-        text += f"\n\n<b>Spot</b>\n{spot_summary}"
+    text = f"<b>Account</b>\n{summary}"
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=BOT_KEYBOARD)
 
 
