@@ -29,6 +29,7 @@ from src.state_tracker import (
     find_sell_coverage_gap,
     format_fill,
     format_open_orders,
+    format_account_summary,
     format_position_status,
     format_sell_coverage_gap,
     format_table,
@@ -47,7 +48,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-STATUS_KEYBOARD = ReplyKeyboardMarkup([["/status"]], resize_keyboard=True, is_persistent=True)
+BOT_KEYBOARD = ReplyKeyboardMarkup(
+    [["/status", "/account"]], resize_keyboard=True, is_persistent=True
+)
 FIRST_ENTRY_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000  # 30 days
 SELL_COVERAGE_GAP_STREAK_THRESHOLD = 3  # consecutive cycles before warning
 CHART_INTERVAL = "15m"
@@ -234,20 +237,39 @@ async def handle_status_command(update: Update, context: ContextTypes.DEFAULT_TY
     text, positions, orders = _status_message("Status", client, state)
 
     async def send_text(t: str) -> None:
-        await update.message.reply_text(t, parse_mode="HTML", reply_markup=STATUS_KEYBOARD)
+        await update.message.reply_text(t, parse_mode="HTML", reply_markup=BOT_KEYBOARD)
 
     async def send_photo(photo: bytes, caption: str) -> None:
         await update.message.reply_photo(
             photo,
             caption=caption,
             parse_mode="HTML",
-            reply_markup=STATUS_KEYBOARD,
+            reply_markup=BOT_KEYBOARD,
             show_caption_above_media=True,
         )
 
     await _send_status(
         client, text, positions, orders, state.order_numbers, send_text, send_photo
     )
+
+
+async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Account-wide summary (spot + perp + every vault this address is in),
+    not scoped to the one vault the rest of this bot watches: account
+    value, HYPE staked (and its $ value), this depositor's equity in the
+    watched vault, and PnL per period.
+    """
+    client: HyperliquidClient = context.bot_data["client"]
+    portfolio = client.get_portfolio()
+    staked_hype = float(client.get_staking_summary().get("delegated", 0) or 0)
+    hype_price = float(client.get_mid_prices().get("HYPE", 0) or 0)
+    staked_value = staked_hype * hype_price if hype_price else None
+    vault_equity = _user_equity(client.get_vault_details())
+    text = (
+        f"<b>Account</b>\n"
+        f"{format_account_summary(portfolio, staked_hype, staked_value, vault_equity)}"
+    )
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=BOT_KEYBOARD)
 
 
 async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state: VaultState) -> None:
@@ -299,7 +321,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
         f"<b>Monitor started</b>\n{tracking_table}\n\n"
         f"{format_position_status(startup_positions, startup_vault_value, startup_equity, _sell_price_by_coin(startup_open_orders))}\n\n"
         f"<b>Open orders</b>\n{startup_orders}",
-        reply_markup=STATUS_KEYBOARD,
+        reply_markup=BOT_KEYBOARD,
     )
     _sd_notify("READY=1")
 
@@ -475,6 +497,11 @@ async def run() -> None:
     application.add_handler(
         CommandHandler(
             "status", handle_status_command, filters=filters.Chat(int(TELEGRAM_CHAT_ID))
+        )
+    )
+    application.add_handler(
+        CommandHandler(
+            "account", handle_account_command, filters=filters.Chat(int(TELEGRAM_CHAT_ID))
         )
     )
 

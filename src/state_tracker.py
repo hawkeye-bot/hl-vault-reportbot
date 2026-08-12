@@ -344,6 +344,57 @@ def format_unstuck_episode(episode: list[list[dict]]) -> str:
     return format_grid(["Time", "Side", "Price", "Size", "PnL"], rows)
 
 
+def format_account_summary(
+    portfolio: list,
+    staked_hype: float | None = None,
+    staked_value: float | None = None,
+    vault_equity: float | None = None,
+) -> str:
+    """Render an account-wide summary: current account value, amount
+    staked (in HYPE, and its $ value just below), and this depositor's
+    equity in the vault the rest of the bot watches, then PnL per period
+    (day/week/month/allTime - no volume, that's not the point here).
+    `portfolio` is the raw list of (period, data) tuples from
+    HyperliquidClient.get_portfolio. Only the combined (spot+perp+vault)
+    periods are shown - the "perpX" variants are skipped since this
+    account trades through a vault rather than directly on its own perp
+    book, so they'd read as ~$0 and just be noise.
+    """
+    periods = {period: data for period, data in portfolio}
+    period_labels = [("day", "Day"), ("week", "Week"), ("month", "Month"), ("allTime", "All time")]
+
+    latest = periods.get("day") or periods.get("allTime") or {}
+    latest_history = latest.get("accountValueHistory") or []
+    account_value = float(latest_history[-1][1]) if latest_history else None
+
+    header_rows = []
+    if account_value is not None:
+        header_rows.append(("Account value", f"${account_value:,.2f}"))
+    if staked_hype is not None:
+        header_rows.append(("Staked", f"{staked_hype:,.2f} HYPE"))
+    if staked_value is not None:
+        header_rows.append(("Staked value", f"${staked_value:,.2f}"))
+    if vault_equity is not None:
+        header_rows.append(("Vault equity", f"${vault_equity:,.2f}"))
+    header = format_table(header_rows) if header_rows else ""
+
+    grid_rows = []
+    for key, label in period_labels:
+        data = periods.get(key)
+        pnl_history = (data or {}).get("pnlHistory") or []
+        if not pnl_history:
+            continue
+        pnl = float(pnl_history[-1][1])
+        value_history = data.get("accountValueHistory") or []
+        start_value = float(value_history[0][1]) if value_history else 0
+        pct_str = f" ({pnl / start_value * 100:+.2f}%)" if start_value > 1e-9 else ""
+        sign = "+" if pnl >= 0 else "-"
+        grid_rows.append([label, f"{sign}${abs(pnl):,.2f}{pct_str}"])
+    grid = format_grid(["Period", "PnL"], grid_rows) if grid_rows else ""
+
+    return "\n\n".join(part for part in (header, grid) if part)
+
+
 def format_position_status(
     asset_positions: list[dict],
     vault_value: float | None,

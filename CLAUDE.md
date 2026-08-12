@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Telegram bot that monitors a single Hyperliquid vault and a specific depositor's position in it, polling the Hyperliquid API and pushing formatted updates (fills, liquidation warnings, sell-coverage mismatches, on-demand `/status`) to a Telegram chat.
+A Telegram bot that monitors a single Hyperliquid vault and a specific depositor's position in it, polling the Hyperliquid API and pushing formatted updates (fills, liquidation warnings, sell-coverage mismatches, on-demand `/status`) to a Telegram chat. `/account` is the one exception to the vault-scoped focus: it reports the depositor's whole Hyperliquid account (spot + perp + every vault they're in), not just their stake in this one vault.
 
 ## Running
 
@@ -87,6 +87,10 @@ Every buy fill message is sent as a photo (`notifier.send_photo`) with the usual
 `_render_chart` also overlays the ladder context onto the chart itself: recent buy fills (from a fresh `client.get_fills_since` scoped to the chart's own lookback window, so only fills actually visible on it are marked) as blue triangle markers at their fill price; each resting buy order as a dashed green line labeled with its rung number (`state.order_numbers`, so it matches `format_open_orders`'s "#" column); and resting sell order(s) as a dashed red line labeled "TP". This is the same chart used everywhere (buy fills, `/status`, heartbeat), so the overlay is identical regardless of which message it's attached to.
 
 `/status` and the heartbeat use `_send_status` (`main.py`), which attaches the first open position's chart as that *same* message's photo caption - one message, not a message plus a trailing photo - falling back to text-only if there's no position or the chart fails to render. Both pass `caption_above=True`/`show_caption_above_media=True` so the text renders first and the chart lands at the bottom, unlike the buy-fill case (`notifier.send_photo`'s default `caption_above=False`) where the chart is the point and sits above the table. `_active_coins` finds which coin(s) currently have an open position; any position beyond the first gets its own caption-less follow-up photo, since a single Telegram message can only have one photo carry a caption. `/status` sends via `update.message.reply_photo`/`reply_text` directly (bypasses the notifier/quiet-hours, same reasoning as the text-only case used to); the heartbeat uses `notifier.send`/`send_photo` so it's held during quiet hours like the rest of the heartbeat.
+
+### `/account`
+
+Account-wide, not vault-specific, and plain text (no chart - deliberately, unlike `/status`/heartbeat/buy fills): account value, HYPE staked (plus its $ value), this depositor's equity in the watched vault, then PnL per period - no volume, that's `/account`'s one deliberate omission from what Hyperliquid's own Portfolio/Staking pages show. `HyperliquidClient.get_portfolio` calls the `portfolio` info endpoint for `USER_ADDRESS` (not the vault), returning value/PnL/volume history per period (`day`/`week`/`month`/`allTime`, plus `perpX` variants scoped to direct perp trading only - this account trades through the vault, so those read as ~$0 and `format_account_summary` skips them). Account value comes from the latest point of the `day` period's `accountValueHistory` (spot + perp + every vault this address is in, combined - the same figure Hyperliquid's UI shows); staked HYPE from `get_staking_summary`'s `delegated` (not `undelegated` or pending-withdrawal, which aren't actively staked), multiplied by `get_mid_prices()["HYPE"]` for its $ value; vault equity reuses `_user_equity(client.get_vault_details())`, the same figure `/status` shows. Each period's % is PnL over that period's *starting* value, omitted when the start is ~0 (`allTime`, since the account began at 0).
 
 ### Money math conventions
 

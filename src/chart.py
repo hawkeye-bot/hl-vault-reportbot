@@ -1,4 +1,4 @@
-"""Renders a dark-themed candlestick chart for fill messages."""
+"""Renders dark-themed charts for fill/status messages."""
 
 import io
 
@@ -6,6 +6,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import matplotlib.pyplot as plt
 import mplfinance as mpf
 import pandas as pd
 
@@ -111,5 +112,6 @@ def render_candles(
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
     buf.seek(0)
     return buf.read()

@@ -34,6 +34,25 @@ class HyperliquidClient:
         end = int(time.time() * 1000)
         return self.info.candles_snapshot(coin, interval, end - lookback_ms, end)
 
+    def get_portfolio(self) -> list:
+        """Account-wide (spot + perp + vault) value/PnL/volume history per
+        period (day/week/month/allTime, plus perp-only variants) - the same
+        data behind Hyperliquid's own Portfolio page. Scoped to user_address,
+        not the vault - this is this depositor's whole account, not just
+        their stake in the one vault the rest of this bot watches.
+        """
+        return self.info.portfolio(self.user_address)
+
+    def get_staking_summary(self) -> dict:
+        """This user's HYPE staking summary: delegated, undelegated, and
+        pending-withdrawal amounts."""
+        return self.info.user_staking_summary(self.user_address)
+
+    def get_mid_prices(self) -> dict[str, str]:
+        """Mid price per coin (e.g. "HYPE"), market-wide - not scoped to
+        the vault or this user."""
+        return self.info.all_mids()
+
     def get_vault_details(self) -> dict:
         """Vault details plus this user's follower state (equity, all-time PnL, etc.)."""
         try:
