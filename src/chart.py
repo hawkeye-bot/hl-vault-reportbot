@@ -146,7 +146,13 @@ def render_candles(
         returnfig=True,
     )
 
-    price_ax = axes[0]
+    price_ax, volume_ax = axes[0], axes[2]
+    price_ax.set_ylabel("")
+    volume_ax.set_ylabel("")
+    volume_ax.set_yticklabels([])
+    for ax in axes:
+        ax.tick_params(axis="x", labelbottom=False, labeltop=False)
+
     label_kwargs = {
         "fontsize": 8,
         "va": "center",
