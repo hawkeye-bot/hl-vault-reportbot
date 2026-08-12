@@ -30,6 +30,7 @@ _STYLE = mpf.make_mpf_style(
 # order side, and are deliberately the other way round per user preference.
 _BUY_COLOR = "#f85149"
 _SELL_COLOR = "#3fb950"
+_CURRENT_PRICE_COLOR = "#f0883e"
 
 
 def render_candles(
@@ -50,7 +51,8 @@ def render_candles(
     the rung, and `open_sell_prices` as dashed green lines labeled "TP" -
     so the chart shows where the ladder has already bought, where it's
     still resting, and where it'll take profit, without opening a
-    separate app.
+    separate app. The last candle's close is always drawn as a dotted
+    orange "Now" line, distinct from the dashed order lines.
     """
     df = pd.DataFrame(
         [
@@ -93,14 +95,13 @@ def render_candles(
                 positions.append(pos)
 
         if positions:
-            # Use the full visible price range (candles plus the resting
-            # order lines below, which can sit far below the candles) so
-            # the stack offsets are a sensible fraction of what actually
-            # renders, not just the (possibly much smaller) candle range.
-            axis_prices = [df["High"].max(), df["Low"].min()]
-            axis_prices += list((open_buy_prices or {}).values())
-            axis_prices += list(open_sell_prices or [])
-            price_range = max(axis_prices) - min(axis_prices)
+            # Sized against the candle range itself (what's actually
+            # visible - the y-axis is capped to this below, regardless of
+            # how far any order lines sit) rather than the full range
+            # including order lines, so stacked triangles land at a
+            # sensible height instead of towering off past the capped
+            # view.
+            price_range = df["High"].max() - df["Low"].min()
             base_offset = price_range * 0.045
             stack_gap = price_range * 0.09
 
@@ -122,14 +123,22 @@ def render_candles(
 
     hlines_prices: list[float] = []
     hlines_colors: list[str] = []
+    hlines_styles: list[str] = []
     for price in (open_buy_prices or {}).values():
         hlines_prices.append(price)
         hlines_colors.append(_BUY_COLOR)
+        hlines_styles.append("--")
     for price in open_sell_prices or []:
         hlines_prices.append(price)
         hlines_colors.append(_SELL_COLOR)
+        hlines_styles.append("--")
+    current_price = float(candles[-1]["c"]) if candles else None
+    if current_price is not None:
+        hlines_prices.append(current_price)
+        hlines_colors.append(_CURRENT_PRICE_COLOR)
+        hlines_styles.append(":")
     hlines = (
-        dict(hlines=hlines_prices, colors=hlines_colors, linestyle="--", linewidths=1.0)
+        dict(hlines=hlines_prices, colors=hlines_colors, linestyle=hlines_styles, linewidths=1.0)
         if hlines_prices
         else None
     )
@@ -139,6 +148,7 @@ def render_candles(
         type="candle",
         style=_STYLE,
         volume=True,
+        panel_ratios=(6, 1),
         title=f"\n{coin}/USDC · {interval}",
         figsize=(8, 5),
         addplot=addplots or None,
@@ -150,6 +160,16 @@ def render_candles(
     price_ax.set_ylabel("")
     volume_ax.set_ylabel("")
     volume_ax.set_yticklabels([])
+
+    # Order lines can sit far from the candle action (a deep DCA rung, or a
+    # take-profit well above it), which would otherwise stretch the axis
+    # and squash the candles into an unreadable band. Keep the visible
+    # range anchored to the candles themselves instead - order lines
+    # outside it just render off the edge rather than resizing the chart.
+    candle_low, candle_high = df["Low"].min(), df["High"].max()
+    candle_pad = (candle_high - candle_low) * 0.15
+    visible_low, visible_high = candle_low - candle_pad, candle_high + candle_pad
+    price_ax.set_ylim(visible_low, visible_high)
     for ax in axes:
         ax.tick_params(axis="x", labelbottom=False, labeltop=False)
 
@@ -158,10 +178,20 @@ def render_candles(
         "va": "center",
         "transform": price_ax.get_yaxis_transform(),
     }
+
+    def label(price: float, text: str, color: str) -> None:
+        # text() isn't clipped to the axes by default, so a label for a
+        # line that's now outside the capped range would otherwise float
+        # off in blank space rather than just not being drawn.
+        if visible_low <= price <= visible_high:
+            price_ax.text(1.005, price, text, color=color, **label_kwargs)
+
     for number, price in (open_buy_prices or {}).items():
-        price_ax.text(1.005, price, f"#{number}", color=_BUY_COLOR, **label_kwargs)
+        label(price, f"#{number}", _BUY_COLOR)
     for price in open_sell_prices or []:
-        price_ax.text(1.005, price, "TP", color=_SELL_COLOR, **label_kwargs)
+        label(price, "TP", _SELL_COLOR)
+    if current_price is not None:
+        label(current_price, "Now", _CURRENT_PRICE_COLOR)
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
