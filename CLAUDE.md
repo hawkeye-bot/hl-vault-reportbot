@@ -32,11 +32,12 @@ Quiet hours (23:00–06:00 local time, hardcoded in `src/notifier.py`) hold all 
 
 ## Architecture
 
-Four modules, each with one job:
+Five modules, each with one job:
 
-- **`src/hl_client.py`** — `HyperliquidClient` wraps the `hyperliquid` SDK's `Info` endpoint (mainnet, no websocket). All reads (margin summary, positions, fills, open orders, vault details) go through here.
+- **`src/hl_client.py`** — `HyperliquidClient` wraps the `hyperliquid` SDK's `Info` endpoint (mainnet, no websocket). All reads (margin summary, positions, fills, open orders, vault details, candles) go through here.
 - **`src/state_tracker.py`** — pure functions and the `VaultState` dataclass. No I/O. This is where almost all logic lives: fill grouping, sell-coverage-gap detection, and every `format_*` function that turns raw API dicts into the monospace `<pre>` tables sent to Telegram. Edit here for message-content changes.
-- **`src/notifier.py`** — thin wrapper around `telegram.Bot.send_message`, tracks `last_sent_at` (used by the heartbeat check) and enforces quiet hours unless the caller passes `force=True`.
+- **`src/chart.py`** — `render_candles` turns raw candle dicts into a dark-themed candlestick+volume PNG (`matplotlib`/`mplfinance`, `Agg` backend so no display is needed).
+- **`src/notifier.py`** — thin wrapper around `telegram.Bot.send_message`/`send_photo`, tracks `last_sent_at` (used by the heartbeat check) and enforces quiet hours unless the caller passes `force=True`.
 - **`main.py`** — wires the above together: `run()` builds the client/notifier/state and a `python-telegram-bot` `Application` (for the `/status` command handler), then runs `poll_loop()` forever alongside it.
 
 ### Poll loop (`main.py:poll_loop`)
@@ -78,6 +79,10 @@ This vault runs [passivbot](https://github.com/enarjord/passivbot), whose ordina
 For context on *why* it happened, `main.py`'s `_update_single_buy_order_tracking` maintains `state.single_buy_order_since` (per coin, when its buy ladder first dropped to exactly one resting order - `buy_order_counts`/`has_single_buy_order_left`'s underlying data). When a loss-realizing sell fill comes in, the poll loop looks up how long that coin had been sitting at one order left and passes it to `format_fill` as `stuck_hours`, shown as a "Stuck" row: a buy ladder that grows through several rungs, then stalls for hours with no further fills, then takes a loss on the next sell - matches the on-chain fingerprint of auto-unstuck triggering on a position whose grid ran out of room. Investigated by reconstructing full position lifecycles from `user_fills_by_time` (paginated past its 2000-record-per-call cap) and cross-referencing passivbot's `docs/config.bot.md`.
 
 `state.unstuck_episode_fills` (per coin, a list of raw fill groups) starts recording once `is_loss_realizing_sell` first fires for that coin, and every subsequent fill for it (either side) gets appended - not just further losses, since the point is to show how the episode resolves (typically one more sell that closes the remainder, often back at a profit). Once there are 2+ entries, the fill message gets a second table appended via `format_unstuck_episode`: Time/Side/Price/Size/PnL for the whole episode so far. The record is cleared when the position returns to flat, same lifecycle as `first_entry_price`.
+
+### Chart on buy fills
+
+Every buy fill message is sent as a photo (`notifier.send_photo`) with the usual table as its caption, rather than as plain text: `main.py` fetches `CHART_LOOKBACK_MS` (12h) of `CHART_INTERVAL` (15m) candles via `client.get_candles` and renders them with `render_candles`. Sell fills are unaffected (still plain text) - the chart is meant to give a feel for what the market's been doing around a DCA entry, not general market commentary. Chart fetch/render is wrapped in try/except and falls back to a plain `notifier.send` on failure, so a candle-API hiccup or render error doesn't drop the fill notification.
 
 ### Money math conventions
 

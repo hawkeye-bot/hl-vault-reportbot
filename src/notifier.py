@@ -49,3 +49,26 @@ class TelegramNotifier:
             log.warning("Telegram send timed out after %ss, skipping", SEND_TIMEOUT_SECONDS)
             return
         self.last_sent_at = time.monotonic()
+
+    async def send_photo(
+        self, photo: bytes, caption: str, reply_markup=None, force: bool = False
+    ) -> None:
+        """Send a photo with a caption, subject to the same quiet-hours and
+        timeout handling as send()."""
+        if not force and _in_quiet_hours():
+            return
+        try:
+            await asyncio.wait_for(
+                self.bot.send_photo(
+                    chat_id=self.chat_id,
+                    photo=photo,
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=reply_markup,
+                ),
+                timeout=SEND_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log.warning("Telegram photo send timed out after %ss, skipping", SEND_TIMEOUT_SECONDS)
+            return
+        self.last_sent_at = time.monotonic()

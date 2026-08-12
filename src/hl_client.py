@@ -1,3 +1,5 @@
+import time
+
 from hyperliquid.info import Info
 from hyperliquid.utils import constants
 
@@ -27,6 +29,10 @@ class HyperliquidClient:
 
     def get_open_orders(self) -> list[dict]:
         return self.info.open_orders(self.vault_address)
+
+    def get_candles(self, coin: str, interval: str, lookback_ms: int) -> list[dict]:
+        end = int(time.time() * 1000)
+        return self.info.candles_snapshot(coin, interval, end - lookback_ms, end)
 
     def get_vault_details(self) -> dict:
         """Vault details plus this user's follower state (equity, all-time PnL, etc.)."""

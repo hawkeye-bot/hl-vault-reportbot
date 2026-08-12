@@ -17,6 +17,7 @@ from src.config import (
     USER_ADDRESS,
     VAULT_ADDRESS,
 )
+from src.chart import render_candles
 from src.hl_client import HyperliquidClient
 from src.notifier import TelegramNotifier
 from src.state_tracker import (
@@ -48,6 +49,8 @@ log = logging.getLogger(__name__)
 STATUS_KEYBOARD = ReplyKeyboardMarkup([["/status"]], resize_keyboard=True, is_persistent=True)
 FIRST_ENTRY_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000  # 30 days
 SELL_COVERAGE_GAP_STREAK_THRESHOLD = 3  # consecutive cycles before warning
+CHART_INTERVAL = "15m"
+CHART_LOOKBACK_MS = 12 * 60 * 60 * 1000  # 12 hours of 15m candles on buy fill charts
 
 
 def _sd_notify(message: str) -> None:
@@ -282,8 +285,23 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                 episode = state.unstuck_episode_fills.get(coin)
                 if episode and len(episode) > 1:
                     msg += f"\n\n<b>Since unstuck began</b>\n{format_unstuck_episode(episode)}"
+
+                # A chart gives a feel for what the market's been doing
+                # without opening a separate app - only worth it for buys,
+                # since that's what a DCA ladder filling is really about
+                chart = None
+                if group[0].get("side") == "B":
+                    try:
+                        candles = client.get_candles(coin, CHART_INTERVAL, CHART_LOOKBACK_MS)
+                        chart = render_candles(candles, coin, CHART_INTERVAL)
+                    except Exception as exc:
+                        log.warning("Chart render failed for %s: %s", coin, exc)
+
                 log.info("Fill: %s", msg)
-                await notifier.send(msg)
+                if chart:
+                    await notifier.send_photo(chart, caption=msg)
+                else:
+                    await notifier.send(msg)
 
                 if position_after_fills(group) == 0:
                     state.first_entry_price.pop(coin, None)
