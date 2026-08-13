@@ -37,13 +37,25 @@ def _fraction(vault_value: float | None, equity: float | None) -> float | None:
     return equity / vault_value
 
 
-def format_table(rows: list[tuple[str, str]]) -> str:
+def format_table(rows: list[tuple[str, str]], section_breaks: set[int] | None = None) -> str:
     """Render label/value rows as a monospace table (Telegram can't bold text
     inside a <pre> block, so this trades bold labels for column alignment).
+
+    `section_breaks` is a set of row indices before which a horizontal rule
+    is inserted, to visually group related rows (e.g. staking vs. vault vs.
+    earn in format_account_summary) without splitting into separate tables -
+    which would each compute their own label width and end up misaligned
+    with each other.
     """
     label_width = max(len(label) for label, _ in rows)
-    body = "\n".join(f"{label.ljust(label_width)} {value}" for label, value in rows)
-    return f"<pre>{body}</pre>"
+    width = max(label_width + 1 + len(value) for label, value in rows)
+    section_breaks = section_breaks or set()
+    lines = []
+    for i, (label, value) in enumerate(rows):
+        if i in section_breaks:
+            lines.append("-" * width)
+        lines.append(f"{label.ljust(label_width)} {value}")
+    return f"<pre>{chr(10).join(lines)}</pre>"
 
 
 def format_grid(headers: list[str], rows: list[list[str]]) -> str:
@@ -354,14 +366,15 @@ def format_account_summary(
     spot_prices: dict[str, float] | None = None,
     spot_min_value: float = 3.0,
     hype_price: float | None = None,
+    vault_all_time_pnl: float | None = None,
 ) -> str:
     """Render an account-wide summary: current account equity, amount
     staked (in HYPE, its equity, then HYPE's current price just below),
-    this depositor's equity in the vault the rest of the bot watches, net
-    value in Hyperliquid's lending ("Earn") product, non-dust spot balances
-    (just their $ value, one row per coin), then PnL per period
-    (day/week/month/allTime - no volume, that's not the point here).
-    `portfolio` is the raw list of (period, data) tuples from
+    this depositor's equity and cumulative all-time profit in the vault the
+    rest of the bot watches, net value in Hyperliquid's lending ("Earn")
+    product, non-dust spot balances (just their $ value, one row per coin),
+    then PnL per period (day/week/month/allTime - no volume, that's not the
+    point here). `portfolio` is the raw list of (period, data) tuples from
     HyperliquidClient.get_portfolio. Only the combined (spot+perp+vault)
     periods are shown - the "perpX" variants are skipped since this account
     trades through a vault rather than directly on its own perp book, so
@@ -374,23 +387,36 @@ def format_account_summary(
     latest_history = latest.get("accountValueHistory") or []
     account_value = float(latest_history[-1][1]) if latest_history else None
 
-    header_rows = []
+    # Built as separate groups (account, staking, vault, earn, spot) rather
+    # than one flat list, so a rule can be drawn between them below - only
+    # between groups that actually have rows, so e.g. no stray rule shows up
+    # when there are no spot holdings to separate from Earn.
+    account_rows = []
     if account_value is not None:
-        header_rows.append(("Account equity", f"${account_value:,.2f}"))
+        account_rows.append(("Account equity", f"${account_value:,.2f}"))
+
+    staking_rows = []
     if staked_hype is not None:
-        header_rows.append(("Staked", f"{staked_hype:,.2f} HYPE"))
+        staking_rows.append(("Staked", f"{staked_hype:,.2f} HYPE"))
     if staked_value is not None:
-        header_rows.append(("Staked equity", f"${staked_value:,.2f}"))
+        staking_rows.append(("Staked equity", f"${staked_value:,.2f}"))
     if hype_price is not None:
-        header_rows.append(("HYPE price", f"${_format_price(hype_price)}"))
+        staking_rows.append(("HYPE price", f"${_format_price(hype_price)}"))
+
+    vault_rows = []
     if vault_equity is not None:
-        header_rows.append(("Vault equity", f"${vault_equity:,.2f}"))
+        vault_rows.append(("Vault equity", f"${vault_equity:,.2f}"))
+    if vault_all_time_pnl is not None:
+        sign = "+" if vault_all_time_pnl >= 0 else "-"
+        vault_rows.append(("Vault profit", f"{sign}${abs(vault_all_time_pnl):,.2f}"))
+
+    earn_rows = []
     if earn_value is not None:
-        header_rows.append(("Earn", f"${earn_value:,.2f}"))
+        earn_rows.append(("Earn", f"${earn_value:,.2f}"))
 
     # Dust and untradeable/no-price tokens are dropped so a wallet with
     # many near-zero balances doesn't clutter the summary; the rest are
-    # sorted by value, highest first, right under the other balances.
+    # sorted by value, highest first.
     spot_prices = spot_prices or {}
     spot_holdings = []
     for b in spot_balances or []:
@@ -404,10 +430,18 @@ def format_account_summary(
             continue
         spot_holdings.append((coin, value))
     spot_holdings.sort(key=lambda h: -h[1])
-    for coin, value in spot_holdings:
-        header_rows.append((coin, f"${value:,.2f}"))
+    spot_rows = [(coin, f"${value:,.2f}") for coin, value in spot_holdings]
 
-    header = format_table(header_rows) if header_rows else ""
+    header_rows = []
+    section_breaks = set()
+    for section in (account_rows, staking_rows, vault_rows, earn_rows, spot_rows):
+        if not section:
+            continue
+        if header_rows:
+            section_breaks.add(len(header_rows))
+        header_rows.extend(section)
+
+    header = format_table(header_rows, section_breaks) if header_rows else ""
 
     grid_rows = []
     for key, label in period_labels:

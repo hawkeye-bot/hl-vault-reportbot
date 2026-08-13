@@ -85,6 +85,15 @@ def _user_equity(details: dict) -> float | None:
     return float(equity_str) if equity_str is not None else None
 
 
+def _vault_all_time_pnl(details: dict) -> float | None:
+    """This depositor's cumulative profit in the vault since joining it -
+    "allTimePnl" in followerState, not to be confused with "pnl" (a more
+    recent-window figure the API also returns alongside it).
+    """
+    pnl_str = (details.get("followerState") or {}).get("allTimePnl")
+    return float(pnl_str) if pnl_str is not None else None
+
+
 def _update_order_numbers(
     client: HyperliquidClient, state: VaultState, orders: list[dict], positions: list[dict]
 ) -> None:
@@ -301,15 +310,18 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
     """Account-wide summary (spot + perp + every vault this address is in),
     not scoped to the one vault the rest of this bot watches: account
     equity, HYPE staked (its equity and current price), this depositor's
-    equity in the watched vault, net Hyperliquid "Earn" (lending) value,
-    non-dust spot balances (each just their $ value), and PnL per period.
+    equity and all-time profit in the watched vault, net Hyperliquid
+    "Earn" (lending) value, non-dust spot balances (each just their $
+    value), and PnL per period.
     """
     client: HyperliquidClient = context.bot_data["client"]
     portfolio = client.get_portfolio()
     staked_hype = float(client.get_staking_summary().get("delegated", 0) or 0)
     hype_price = float(client.get_mid_prices().get("HYPE", 0) or 0)
     staked_value = staked_hype * hype_price if hype_price else None
-    vault_equity = _user_equity(client.get_vault_details())
+    vault_details = client.get_vault_details()
+    vault_equity = _user_equity(vault_details)
+    vault_all_time_pnl = _vault_all_time_pnl(vault_details)
     earn_value = client.get_earn_value()
     summary = format_account_summary(
         portfolio,
@@ -320,6 +332,7 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
         client.get_spot_balances(),
         client.get_spot_prices(),
         hype_price=hype_price,
+        vault_all_time_pnl=vault_all_time_pnl,
     )
     text = f"<b>Account</b>\n{summary}"
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=BOT_KEYBOARD)
