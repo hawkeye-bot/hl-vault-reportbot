@@ -353,18 +353,19 @@ def format_account_summary(
     spot_balances: list[dict] | None = None,
     spot_prices: dict[str, float] | None = None,
     spot_min_value: float = 3.0,
+    hype_price: float | None = None,
 ) -> str:
     """Render an account-wide summary: current account equity, amount
-    staked (in HYPE, and its equity just below), this depositor's equity
-    in the vault the rest of the bot watches, net value in Hyperliquid's
-    lending ("Earn") product, non-dust spot balances (just their $ value,
-    one row per coin), then PnL per period (day/week/month/allTime - no
-    volume, that's not the point here). `portfolio` is the raw list of
-    (period, data) tuples from HyperliquidClient.get_portfolio. Only the
-    combined (spot+perp+vault) periods are shown - the "perpX" variants
-    are skipped since this account trades through a vault rather than
-    directly on its own perp book, so they'd read as ~$0 and just be
-    noise.
+    staked (in HYPE, its equity, then HYPE's current price just below),
+    this depositor's equity in the vault the rest of the bot watches, net
+    value in Hyperliquid's lending ("Earn") product, non-dust spot balances
+    (just their $ value, one row per coin), then PnL per period
+    (day/week/month/allTime - no volume, that's not the point here).
+    `portfolio` is the raw list of (period, data) tuples from
+    HyperliquidClient.get_portfolio. Only the combined (spot+perp+vault)
+    periods are shown - the "perpX" variants are skipped since this account
+    trades through a vault rather than directly on its own perp book, so
+    they'd read as ~$0 and just be noise.
     """
     periods = {period: data for period, data in portfolio}
     period_labels = [("day", "Day"), ("week", "Week"), ("month", "Month"), ("allTime", "All time")]
@@ -380,6 +381,8 @@ def format_account_summary(
         header_rows.append(("Staked", f"{staked_hype:,.2f} HYPE"))
     if staked_value is not None:
         header_rows.append(("Staked equity", f"${staked_value:,.2f}"))
+    if hype_price is not None:
+        header_rows.append(("HYPE price", f"${_format_price(hype_price)}"))
     if vault_equity is not None:
         header_rows.append(("Vault equity", f"${vault_equity:,.2f}"))
     if earn_value is not None:

@@ -300,9 +300,9 @@ async def handle_status_command(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Account-wide summary (spot + perp + every vault this address is in),
     not scoped to the one vault the rest of this bot watches: account
-    value, HYPE staked (and its $ value), this depositor's equity in the
-    watched vault, net Hyperliquid "Earn" (lending) value, non-dust spot
-    balances (each just their $ value), and PnL per period.
+    equity, HYPE staked (its equity and current price), this depositor's
+    equity in the watched vault, net Hyperliquid "Earn" (lending) value,
+    non-dust spot balances (each just their $ value), and PnL per period.
     """
     client: HyperliquidClient = context.bot_data["client"]
     portfolio = client.get_portfolio()
@@ -319,6 +319,7 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
         earn_value,
         client.get_spot_balances(),
         client.get_spot_prices(),
+        hype_price=hype_price,
     )
     text = f"<b>Account</b>\n{summary}"
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=BOT_KEYBOARD)
