@@ -354,8 +354,8 @@ def format_account_summary(
     spot_prices: dict[str, float] | None = None,
     spot_min_value: float = 3.0,
 ) -> str:
-    """Render an account-wide summary: current account value, amount
-    staked (in HYPE, and its $ value just below), this depositor's equity
+    """Render an account-wide summary: current account equity, amount
+    staked (in HYPE, and its equity just below), this depositor's equity
     in the vault the rest of the bot watches, net value in Hyperliquid's
     lending ("Earn") product, non-dust spot balances (just their $ value,
     one row per coin), then PnL per period (day/week/month/allTime - no
@@ -375,11 +375,11 @@ def format_account_summary(
 
     header_rows = []
     if account_value is not None:
-        header_rows.append(("Account value", f"${account_value:,.2f}"))
+        header_rows.append(("Account equity", f"${account_value:,.2f}"))
     if staked_hype is not None:
         header_rows.append(("Staked", f"{staked_hype:,.2f} HYPE"))
     if staked_value is not None:
-        header_rows.append(("Staked value", f"${staked_value:,.2f}"))
+        header_rows.append(("Staked equity", f"${staked_value:,.2f}"))
     if vault_equity is not None:
         header_rows.append(("Vault equity", f"${vault_equity:,.2f}"))
     if earn_value is not None:
