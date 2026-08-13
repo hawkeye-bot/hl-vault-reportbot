@@ -428,6 +428,7 @@ def format_position_status(
     vault_value: float | None,
     equity: float | None,
     sell_price_by_coin: dict[str, float] | None = None,
+    pending_entry_coin: str | None = None,
 ) -> str:
     """List open positions: exposure % is relative to the whole vault, dollar
     value, PnL, and funding are scaled down to this user's share of it.
@@ -435,6 +436,13 @@ def format_position_status(
     scope as the entry price it's shown alongside. The API's cumFunding is a
     cost accumulator (positive = paid), the opposite of PnL's sign
     convention, so it's negated here to display like PnL (positive = gained).
+
+    With no open position at all, the flat fallback below normally leaves
+    Symbol blank - but a coin can be flat and still have a single resting
+    re-entry order on the exchange (passivbot places one the moment a
+    position closes; see main.py's _pending_entry_coin). `pending_entry_coin`
+    fills that Symbol row with it when so, since it's otherwise not named
+    anywhere in the message even though format_open_orders lists its order.
     """
     fraction = _fraction(vault_value, equity)
     sell_price_by_coin = sell_price_by_coin or {}
@@ -487,7 +495,7 @@ def format_position_status(
     rows.append(("Exposure", "$0.00 (0.00%)" if vault_value else "$0.00"))
     if fraction is not None:
         rows.append(("Funding", "$0.00 (0.00%)"))
-    rows.append(("Symbol", ""))
+    rows.append(("Symbol", _pair(pending_entry_coin) if pending_entry_coin else ""))
     rows.append(("Current price", ""))
     rows.append(("Entry price", ""))
     return format_table(rows)
@@ -598,6 +606,19 @@ def format_open_orders(
     format_position_status's "Sell price" row instead. Distance is measured
     from the fill that first opened the position (mirrors format_fill's
     convention). Numbered via order_numbers (see assign_order_numbers).
+
+    Includes a coin with no open position right now if it has a resting
+    order - passivbot places a fresh re-entry order the moment a position
+    closes, so a "flat" coin can still have exactly one order sitting on
+    the exchange. Distance is blank for it (no first_entry_price yet, since
+    nothing's opened) and it's numbered #1 (see _update_order_numbers) since
+    it's the start of a new cycle, not a continuation of the last one.
+
+    A single table, no coin column: this vault only ever has orders for one
+    coin at a time - either a full ladder for an open position, or (while
+    flat) at most one pending re-entry order - so nothing here needs
+    disambiguating; that coin's symbol is shown in format_position_status's
+    Symbol row instead (see its `pending_entry_coin` param for the flat case).
     """
     buy_orders = [o for o in orders if o.get("side") == "B"]
     if not buy_orders:

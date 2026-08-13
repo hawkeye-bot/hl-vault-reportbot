@@ -85,18 +85,33 @@ def _user_equity(details: dict) -> float | None:
     return float(equity_str) if equity_str is not None else None
 
 
-def _update_order_numbers(client: HyperliquidClient, state: VaultState, orders: list[dict]) -> None:
+def _update_order_numbers(
+    client: HyperliquidClient, state: VaultState, orders: list[dict], positions: list[dict]
+) -> None:
     """Keep state.order_numbers current, fetching fill history to calibrate
     a fresh assignment only when some order isn't numbered yet (rare - see
     needs_fresh_numbering) rather than every cycle.
+
+    A coin with no open position right now (flat) gets an empty history
+    even if it has a resting order - passivbot places a fresh re-entry
+    order the moment a position closes, and fill history alone can't tell
+    "flat now, about to start a new cycle" from "still mid-cycle", since
+    both just look like fills since the last startPosition==0 fill. Without
+    this, a flat coin's brand-new re-entry order would inherit the *previous*,
+    already-closed cycle's history and get numbered as a continuation of it
+    (e.g. #8) instead of starting the new cycle at #1.
     """
     historical_sizes = {}
     if needs_fresh_numbering(orders, state.order_numbers):
+        active_coins = set(_active_coins(positions))
         lookback_fills = client.get_fills_since(int(time.time() * 1000) - FIRST_ENTRY_LOOKBACK_MS)
         coins = {
             o.get("coin") for o in orders if o.get("side") == "B" and not o.get("reduceOnly")
         }
-        historical_sizes = {coin: historical_order_sizes(lookback_fills, coin) for coin in coins}
+        historical_sizes = {
+            coin: historical_order_sizes(lookback_fills, coin) if coin in active_coins else []
+            for coin in coins
+        }
     state.order_numbers = assign_order_numbers(orders, state.order_numbers, historical_sizes)
 
 
@@ -148,6 +163,21 @@ def _active_coins(positions: list[dict]) -> list[str]:
         if coin and float(pos.get("szi", 0) or 0) != 0:
             coins.append(coin)
     return coins
+
+
+def _pending_entry_coin(positions: list[dict], orders: list[dict]) -> str | None:
+    """The coin of a resting, non-reduce-only buy order for a coin with no
+    open position right now - the lone re-entry attempt passivbot places
+    the moment a position closes. In practice at most one such order/coin
+    exists at a time (this vault only ever trades one coin at once), so the
+    first match is enough - used to fill format_position_status's Symbol
+    row when otherwise blank.
+    """
+    active = set(_active_coins(positions))
+    for o in orders:
+        if o.get("side") == "B" and not o.get("reduceOnly") and o.get("coin") not in active:
+            return o.get("coin")
+    return None
 
 
 async def _render_chart(
@@ -235,10 +265,10 @@ def _status_message(
     equity = _user_equity(client.get_vault_details())
     positions = client.get_open_positions()
     orders = client.get_open_orders()
-    _update_order_numbers(client, state, orders)
+    _update_order_numbers(client, state, orders, positions)
     text = (
         f"<b>{title}</b>\n"
-        f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders))}\n\n"
+        f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders), _pending_entry_coin(positions, orders))}\n\n"
         f"<b>Open orders</b>\n"
         f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
     )
@@ -328,8 +358,10 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
         for o in startup_open_orders
         if o.get("side") == "B" and not o.get("reduceOnly")
     }
+    startup_active_coins = set(_active_coins(startup_positions))
     startup_historical_sizes = {
-        coin: historical_order_sizes(lookback_fills, coin) for coin in startup_coins
+        coin: historical_order_sizes(lookback_fills, coin) if coin in startup_active_coins else []
+        for coin in startup_coins
     }
     state.order_numbers = assign_order_numbers(
         startup_open_orders, state.order_numbers, startup_historical_sizes
@@ -341,7 +373,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
     )
     await notifier.send(
         f"<b>Monitor started</b>\n{tracking_table}\n\n"
-        f"{format_position_status(startup_positions, startup_vault_value, startup_equity, _sell_price_by_coin(startup_open_orders))}\n\n"
+        f"{format_position_status(startup_positions, startup_vault_value, startup_equity, _sell_price_by_coin(startup_open_orders), _pending_entry_coin(startup_positions, startup_open_orders))}\n\n"
         f"<b>Open orders</b>\n{startup_orders}",
         reply_markup=BOT_KEYBOARD,
     )
@@ -359,7 +391,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
             # to (re)compute - snapshot the prior numbering first so a fill
             # message can still report which rung just filled.
             prior_order_numbers = dict(state.order_numbers)
-            _update_order_numbers(client, state, orders)
+            _update_order_numbers(client, state, orders, positions)
             _update_single_buy_order_tracking(state, orders)
 
             # Liquidation warning
@@ -486,7 +518,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
             if silence >= heartbeat_interval:
                 heartbeat_text = (
                     f"<b>Heartbeat</b>\n"
-                    f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders))}\n\n"
+                    f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders), _pending_entry_coin(positions, orders))}\n\n"
                     f"<b>Open orders</b>\n"
                     f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
                 )
