@@ -484,9 +484,9 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
 
                 log.info("Fill: %s", msg)
                 if chart:
-                    await notifier.send_photo(chart, caption=msg)
+                    await notifier.send_photo(chart, caption=msg, force=True)
                 else:
-                    await notifier.send(msg)
+                    await notifier.send(msg, force=True)
 
                 if position_after_fills(group) == 0:
                     state.first_entry_price.pop(coin, None)

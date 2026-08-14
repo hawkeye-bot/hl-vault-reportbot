@@ -28,7 +28,7 @@ All config is env vars loaded via `.env` (see `.env.example`), read once in `src
 - `USER_ADDRESS` — the depositor whose share of the vault is reported (equity, scaled PnL).
 - `POLL_INTERVAL_SECONDS`, `LIQUIDATION_WARN_THRESHOLD`, `HEARTBEAT_INTERVAL_SECONDS`, `HEARTBEAT_FAST_INTERVAL_SECONDS` — tunables, all with defaults.
 
-Quiet hours (23:00–06:00 local time, hardcoded in `src/notifier.py`) hold all non-critical sends. Liquidation warnings and sell-coverage-mismatch alerts pass `force=True` to `TelegramNotifier.send` to bypass this; the `/status` command replies directly via `update.message.reply_text` rather than through the notifier, so it's unaffected either way.
+Quiet hours (23:00–06:00 local time, hardcoded in `src/notifier.py`) hold sends by default. Liquidation warnings, sell-coverage-mismatch alerts, and fill notifications (buy/sell order filled, with or without a chart) all pass `force=True` to bypass this - a fill is something the user wants to know about as it happens, not batched until morning. The heartbeat is the one message still held during quiet hours, by design (it's just a liveness check, not something urgent). The `/status` command replies directly via `update.message.reply_text` rather than through the notifier, so it's unaffected either way.
 
 ## Architecture
 
