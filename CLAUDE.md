@@ -72,6 +72,8 @@ Fetching fill history is only worth its cost when something is actually unnumber
 
 A filled order is already gone from `orders` by the time a fill shows up, so `_update_order_numbers` (which only keeps numbers for currently-open oids) would have already dropped it before the fill gets processed. `main.py`'s poll loop snapshots `state.order_numbers` into `prior_order_numbers` *before* calling `_update_order_numbers` each cycle, so a buy fill message can still look up which rung just filled and show it in the Symbol row (`format_fill`'s `order_number` param) - e.g. "CRVUSDC Buy #4".
 
+A buy fill message also gets the same "Open orders" table shown in `/status`/heartbeat appended below it (after the "Since unstuck began" table, if that's present too) - `main.py`'s poll loop already has that cycle's post-fill `orders` on hand, so it's the ladder as it stands right after this rung filled, not a stale pre-fill snapshot. Sell fills don't get this - the ladder isn't what a sell is about.
+
 `format_position_status` also takes `sell_price_by_coin` (built by `main.py`'s `_sell_price_by_coin`, the nearest-to-market resting sell price per coin) and shows it as "Sell price", ordered highest-to-lowest price: Sell price, Current price, Entry price.
 
 ### Loss-realizing sell detection

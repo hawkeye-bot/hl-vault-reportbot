@@ -501,6 +501,17 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                 if episode and len(episode) > 1:
                     msg += f"\n\n<b>Since unstuck began</b>\n{format_unstuck_episode(episode)}"
 
+                # Buy fills also get the same "Open orders" table shown in
+                # /status/heartbeat, so it's clear what's still left in the
+                # ladder right after one of its rungs just filled - `orders`
+                # already reflects the post-fill state (fetched fresh this
+                # cycle, after the fill happened on the exchange).
+                if group[0].get("side") == "B":
+                    msg += (
+                        f"\n\n<b>Open orders</b>\n"
+                        f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
+                    )
+
                 # A chart gives a feel for what the market's been doing
                 # without opening a separate app - only worth it for buys,
                 # since that's what a DCA ladder filling is really about
