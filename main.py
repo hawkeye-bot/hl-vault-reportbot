@@ -25,6 +25,7 @@ from src.state_tracker import (
     VaultState,
     assign_order_numbers,
     buy_order_counts,
+    fills_since_position_opened,
     find_position_open_price,
     find_sell_coverage_gap,
     format_fill,
@@ -199,12 +200,16 @@ async def _render_chart(
     """Chart for `coin` with fills, resting buy rungs, resting sell(s), and
     the position's entry price overlaid - see render_candles. Buy fills
     are limited to the chart's own lookback window, matching what's
-    actually visible on it.
+    actually visible on it - and further scoped to the position that's
+    still open (fills_since_position_opened), since a coin can close and
+    reopen more than once within that window and only the fills from the
+    current, still-open cycle should get a "bought here" marker.
     """
     try:
         candles = client.get_candles(coin, CHART_INTERVAL, CHART_LOOKBACK_MS)
         recent_fills = client.get_fills_since(int(time.time() * 1000) - CHART_LOOKBACK_MS)
-        buy_fills = [f for f in recent_fills if f.get("coin") == coin and f.get("side") == "B"]
+        current_cycle_fills = fills_since_position_opened(recent_fills, coin)
+        buy_fills = [f for f in current_cycle_fills if f.get("side") == "B"]
         open_buy_prices = {
             order_numbers[o.get("oid")]: float(o.get("limitPx", 0) or 0)
             for o in orders

@@ -99,6 +99,26 @@ def find_position_open_price(fills: list[dict], coin: str) -> float | None:
     return float(opens[-1]["px"]) if opens else None
 
 
+def fills_since_position_opened(fills: list[dict], coin: str) -> list[dict]:
+    """This coin's fills, chronological, from the point its current position
+    was last opened from flat onward - same boundary as
+    find_position_open_price. A coin's position can close and reopen more
+    than once within a chart's lookback window, so raw `fills` alone would
+    include fills from an earlier, already-closed cycle - this scopes them
+    to the position that's actually still open, e.g. for the chart's "bought
+    here" markers.
+    """
+    coin_fills = sorted(
+        (f for f in fills if f.get("coin") == coin), key=lambda f: f.get("time", 0)
+    )
+    open_indices = [
+        i
+        for i, f in enumerate(coin_fills)
+        if f.get("side") == "B" and float(f.get("startPosition", 0) or 0) == 0
+    ]
+    return coin_fills[open_indices[-1] :] if open_indices else coin_fills
+
+
 def historical_order_sizes(fills: list[dict], coin: str) -> list[float]:
     """Chronological sizes (summed per order id, so a partially-filled order
     counts once) of every buy order that filled for `coin` since its
