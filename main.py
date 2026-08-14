@@ -5,6 +5,7 @@ import os
 import socket
 import time
 
+import requests
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, filters
 
@@ -56,6 +57,7 @@ FIRST_ENTRY_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000  # 30 days
 SELL_COVERAGE_GAP_STREAK_THRESHOLD = 3  # consecutive cycles before warning
 CHART_INTERVAL = "15m"
 CHART_LOOKBACK_MS = 12 * 60 * 60 * 1000  # 12 hours of 15m candles on buy fill charts
+EUR_RATE_TIMEOUT_SECONDS = 10
 
 
 def _sd_notify(message: str) -> None:
@@ -311,23 +313,47 @@ async def handle_status_command(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 
+def _usd_to_eur_rate() -> float | None:
+    """Current USD->EUR rate (ECB reference rate via the free, no-key-needed
+    Frankfurter API). Hyperliquid itself has no usable EUR feed - its "EUR"
+    spot token is listed but has no trading pairs - so converting the
+    account equity to EUR needs an external forex source. Returns None
+    (letting the caller skip that row) rather than raising, so a forex-API
+    hiccup doesn't take down the rest of the account summary.
+    """
+    try:
+        resp = requests.get(
+            "https://api.frankfurter.dev/v1/latest",
+            params={"base": "USD", "symbols": "EUR"},
+            timeout=EUR_RATE_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        return float(resp.json()["rates"]["EUR"])
+    except Exception as exc:
+        log.warning("USD/EUR rate fetch failed: %s", exc)
+        return None
+
+
 async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Account-wide summary (spot + perp + every vault this address is in),
     not scoped to the one vault the rest of this bot watches: account
-    equity, HYPE staked (its equity and current price), this depositor's
-    equity and all-time profit in the watched vault, net Hyperliquid
-    "Earn" (lending) value, non-dust spot balances (each just their $
-    value), and PnL per period.
+    equity (plus its EUR equivalent), HYPE staked (its equity and current
+    price) and BTC's current price, this depositor's equity and all-time
+    profit in the watched vault, net Hyperliquid "Earn" (lending) value,
+    non-dust spot balances (each just their $ value), and PnL per period.
     """
     client: HyperliquidClient = context.bot_data["client"]
     portfolio = client.get_portfolio()
     staked_hype = float(client.get_staking_summary().get("delegated", 0) or 0)
-    hype_price = float(client.get_mid_prices().get("HYPE", 0) or 0)
+    mid_prices = client.get_mid_prices()
+    hype_price = float(mid_prices.get("HYPE", 0) or 0)
+    btc_price = float(mid_prices.get("BTC", 0) or 0)
     staked_value = staked_hype * hype_price if hype_price else None
     vault_details = client.get_vault_details()
     vault_equity = _user_equity(vault_details)
     vault_all_time_pnl = _vault_all_time_pnl(vault_details)
     earn_value = client.get_earn_value()
+    eur_rate = _usd_to_eur_rate()
     summary = format_account_summary(
         portfolio,
         staked_hype,
@@ -338,6 +364,8 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
         client.get_spot_prices(),
         hype_price=hype_price,
         vault_all_time_pnl=vault_all_time_pnl,
+        btc_price=btc_price,
+        eur_rate=eur_rate,
     )
     text = f"<b>Account</b>\n{summary}"
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=BOT_KEYBOARD)

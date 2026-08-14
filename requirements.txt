@@ -4,3 +4,4 @@ python-dotenv==1.0.1
 aiohttp==3.11.11
 matplotlib==3.11.1
 mplfinance==0.12.10b0
+requests==2.34.2

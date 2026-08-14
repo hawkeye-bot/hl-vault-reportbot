@@ -387,18 +387,21 @@ def format_account_summary(
     spot_min_value: float = 3.0,
     hype_price: float | None = None,
     vault_all_time_pnl: float | None = None,
+    btc_price: float | None = None,
+    eur_rate: float | None = None,
 ) -> str:
-    """Render an account-wide summary: current account equity, amount
-    staked (in HYPE, its equity, then HYPE's current price just below),
-    this depositor's equity and cumulative all-time profit in the vault the
-    rest of the bot watches, net value in Hyperliquid's lending ("Earn")
-    product, non-dust spot balances (just their $ value, one row per coin),
-    then PnL per period (day/week/month/allTime - no volume, that's not the
-    point here). `portfolio` is the raw list of (period, data) tuples from
-    HyperliquidClient.get_portfolio. Only the combined (spot+perp+vault)
-    periods are shown - the "perpX" variants are skipped since this account
-    trades through a vault rather than directly on its own perp book, so
-    they'd read as ~$0 and just be noise.
+    """Render an account-wide summary: current account equity (plus its EUR
+    equivalent just below, if `eur_rate` is available), amount staked (in
+    HYPE, its equity, then HYPE's current price and BTC's current price just
+    below), this depositor's equity and cumulative all-time profit in the
+    vault the rest of the bot watches, net value in Hyperliquid's lending
+    ("Earn") product, non-dust spot balances (just their $ value, one row
+    per coin), then PnL per period (day/week/month/allTime - no volume,
+    that's not the point here). `portfolio` is the raw list of (period,
+    data) tuples from HyperliquidClient.get_portfolio. Only the combined
+    (spot+perp+vault) periods are shown - the "perpX" variants are skipped
+    since this account trades through a vault rather than directly on its
+    own perp book, so they'd read as ~$0 and just be noise.
     """
     periods = {period: data for period, data in portfolio}
     period_labels = [("day", "Day"), ("week", "Week"), ("month", "Month"), ("allTime", "All time")]
@@ -414,6 +417,8 @@ def format_account_summary(
     account_rows = []
     if account_value is not None:
         account_rows.append(("Account equity", f"${account_value:,.2f}"))
+        if eur_rate is not None:
+            account_rows.append(("", f"€{account_value * eur_rate:,.2f}"))
 
     staking_rows = []
     if staked_hype is not None:
@@ -422,6 +427,8 @@ def format_account_summary(
         staking_rows.append(("Staked equity", f"${staked_value:,.2f}"))
     if hype_price is not None:
         staking_rows.append(("HYPE price", f"${_format_price(hype_price)}"))
+    if btc_price is not None:
+        staking_rows.append(("BTC price", f"${_format_price(btc_price)}"))
 
     vault_rows = []
     if vault_equity is not None:
