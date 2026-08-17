@@ -665,6 +665,8 @@ def format_open_orders(
     orders: list[dict],
     first_entry_price_by_coin: dict[str, float] | None = None,
     order_numbers: dict[int, int] | None = None,
+    vault_value: float | None = None,
+    equity: float | None = None,
 ) -> str:
     """List resting buy orders (the DCA ladder) - sell orders are shown via
     format_position_status's "Sell price" row instead. Distance is measured
@@ -683,18 +685,25 @@ def format_open_orders(
     flat) at most one pending re-entry order - so nothing here needs
     disambiguating; that coin's symbol is shown in format_position_status's
     Symbol row instead (see its `pending_entry_coin` param for the flat case).
+
+    Unlike "Exposure" elsewhere (whole-vault notional), "Value" here is
+    scaled to this depositor's share (`fraction = equity / vault_value`) -
+    what a resting order is actually worth to this user if it fills, not
+    the whole vault's order size.
     """
     buy_orders = [o for o in orders if o.get("side") == "B"]
     if not buy_orders:
         return "No open orders"
     first_entry_price_by_coin = first_entry_price_by_coin or {}
     order_numbers = order_numbers or {}
+    fraction = _fraction(vault_value, equity)
 
     rows = []
     for o in sorted(buy_orders, key=lambda o: float(o.get("limitPx", 0) or 0), reverse=True):
         action = "Buy (RO)" if o.get("reduceOnly") else "Buy"
         price = float(o.get("limitPx", 0) or 0)
         notional = price * float(o.get("sz", 0) or 0)
+        value_str = f"${notional * fraction:,.2f}" if fraction is not None else "n/a"
 
         distance_ref = first_entry_price_by_coin.get(o.get("coin"))
         distance = (
@@ -707,7 +716,7 @@ def format_open_orders(
                 f"#{number}" if number else "",
                 action,
                 f"${_format_price(price)}",
-                f"${notional:,.2f}",
+                value_str,
                 distance,
             ]
         )

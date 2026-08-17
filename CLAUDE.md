@@ -108,6 +108,7 @@ Non-dust spot balances (worth $3+) get one row each - just coin name and $ value
 
 - "Exposure" / notional figures are relative to the **whole vault** (`vault_value` from margin summary).
 - Dollar PnL and equity are **scaled to this depositor's share** (`equity / vault_value`, called `fraction` in `state_tracker.py`), since the vault pools multiple followers' capital.
+- `format_open_orders`'s "Value" column is the exception to the first rule above - it's scaled to `fraction` like PnL/equity, not left as whole-vault notional, since what matters there is what a resting order is actually worth to this depositor if it fills.
 - Telegram's `<pre>` blocks can't render bold text inline, so `format_table`/`format_grid` use fixed-width padding for alignment instead of markdown emphasis.
 
 ### Hang recovery

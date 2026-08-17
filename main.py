@@ -308,7 +308,7 @@ def _status_message(
         f"<b>{title}</b>\n"
         f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders), _pending_entry_coin(positions, orders))}\n\n"
         f"<b>Open orders</b>\n"
-        f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
+        f"{format_open_orders(orders, state.first_entry_price, state.order_numbers, vault_value, equity)}"
     )
     return text, positions, orders
 
@@ -452,6 +452,8 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
         startup_open_orders,
         state.first_entry_price,
         state.order_numbers,
+        startup_vault_value,
+        startup_equity,
     )
     await notifier.send(
         f"<b>Monitor started</b>\n{tracking_table}\n\n"
@@ -544,7 +546,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                 if group[0].get("side") == "B":
                     msg += (
                         f"\n\n<b>Open orders</b>\n"
-                        f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
+                        f"{format_open_orders(orders, state.first_entry_price, state.order_numbers, vault_value, equity)}"
                     )
 
                 # A chart gives a feel for what the market's been doing
@@ -613,7 +615,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                     f"<b>Heartbeat</b>\n"
                     f"{format_position_status(positions, vault_value, equity, _sell_price_by_coin(orders), _pending_entry_coin(positions, orders))}\n\n"
                     f"<b>Open orders</b>\n"
-                    f"{format_open_orders(orders, state.first_entry_price, state.order_numbers)}"
+                    f"{format_open_orders(orders, state.first_entry_price, state.order_numbers, vault_value, equity)}"
                 )
                 await _send_status(
                     client,
