@@ -240,6 +240,28 @@ async def _render_chart(
         return None
 
 
+async def _render_spot_chart(client: HyperliquidClient, token_name: str) -> bytes | None:
+    """Plain candlestick+volume chart (render_candles, no order/fill overlay)
+    for a spot token's USDC market - same look as every other chart in this
+    bot, just without the vault-position context those have, since this
+    isn't about a position the vault holds. Spot markets aren't addressable
+    by the token's own symbol in candleSnapshot, only by their internal pair
+    name (get_spot_pair_name), which is why this can't just reuse
+    _render_chart directly - that ties one `coin` to both the candle-fetch
+    identifier and the chart's title, which don't match here ("@107" vs
+    "HYPE").
+    """
+    try:
+        pair_name = client.get_spot_pair_name(token_name)
+        if not pair_name:
+            return None
+        candles = client.get_candles(pair_name, CHART_INTERVAL, CHART_LOOKBACK_MS)
+        return render_candles(candles, token_name, CHART_INTERVAL)
+    except Exception as exc:
+        log.warning("Spot chart render failed for %s: %s", token_name, exc)
+        return None
+
+
 async def _send_status(
     client: HyperliquidClient,
     text: str,
@@ -340,7 +362,10 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
     equity (plus its EUR equivalent), HYPE staked (its equity and current
     price) and BTC's current price, this depositor's equity and all-time
     profit in the watched vault, net Hyperliquid "Earn" (lending) value,
-    non-dust spot balances (each just their $ value), and PnL per period.
+    non-dust spot balances (each just their $ value), and PnL per period -
+    plus a HYPE/USDC spot chart attached as the message's photo, text above
+    per the same convention /status and the heartbeat use (unlike a buy
+    fill's chart, this isn't the point of the message, just context).
     """
     client: HyperliquidClient = context.bot_data["client"]
     portfolio = client.get_portfolio()
@@ -368,7 +393,17 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
         eur_rate=eur_rate,
     )
     text = f"<b>Account</b>\n{summary}"
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=BOT_KEYBOARD)
+    chart = await _render_spot_chart(client, "HYPE")
+    if chart:
+        await update.message.reply_photo(
+            chart,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=BOT_KEYBOARD,
+            show_caption_above_media=True,
+        )
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=BOT_KEYBOARD)
 
 
 async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state: VaultState) -> None:

@@ -88,6 +88,25 @@ class HyperliquidClient:
         _, prices = self._token_names_and_prices()
         return prices
 
+    def get_spot_pair_name(self, token_name: str) -> str | None:
+        """The internal pair name (e.g. "@107") for `token_name`'s
+        USDC-quoted spot market - candleSnapshot and similar endpoints need
+        this, not the token's own symbol, and it's often a raw "@<index>"
+        rather than something human-readable. Returns None if the token has
+        no USDC-quoted spot market.
+        """
+        meta, _ = self.info.spot_meta_and_asset_ctxs()
+        token_idx = next(
+            (t["index"] for t in meta["tokens"] if t["name"] == token_name), None
+        )
+        if token_idx is None:
+            return None
+        for pair in meta["universe"]:
+            base_idx, quote_idx = pair["tokens"]
+            if base_idx == token_idx and quote_idx == 0:
+                return pair["name"]
+        return None
+
     def get_earn_value(self) -> float:
         """Net USD value of this user's Hyperliquid lending ("Earn")
         positions - total supplied minus borrowed, across every token,

@@ -151,18 +151,26 @@ def render_candles(
         else None
     )
 
-    fig, axes = mpf.plot(
-        df,
+    # mplfinance's kwarg validators reject `addplot=None`/`hlines=None`
+    # outright (only accepting a real list/dict, or the kwarg being absent
+    # entirely) - both can legitimately be empty for a chart with no
+    # order/fill context to overlay (e.g. a plain spot-price chart), so
+    # those kwargs are only included when there's actually something to plot.
+    plot_kwargs = dict(
         type="candle",
         style=_STYLE,
         volume=True,
         panel_ratios=(6, 1),
         title=f"\n{coin}/USDC · {interval}",
         figsize=(8, 5),
-        addplot=addplots or None,
-        hlines=hlines,
         returnfig=True,
     )
+    if addplots:
+        plot_kwargs["addplot"] = addplots
+    if hlines:
+        plot_kwargs["hlines"] = hlines
+
+    fig, axes = mpf.plot(df, **plot_kwargs)
 
     price_ax, volume_ax = axes[0], axes[2]
     price_ax.set_ylabel("")
