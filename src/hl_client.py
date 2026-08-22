@@ -27,6 +27,14 @@ class HyperliquidClient:
     def get_fills_since(self, start_time_ms: int) -> list[dict]:
         return self.info.user_fills_by_time(self.vault_address, start_time_ms)
 
+    def get_user_fills_since(self, start_time_ms: int) -> list[dict]:
+        """Fills for USER_ADDRESS directly (this depositor's own account -
+        spot trades, HYPE DCA, etc.) rather than the vault it follows. Spot
+        fills' "coin" is the pair's internal name (e.g. "@107" for
+        HYPE/USDC, see get_spot_pair_name), not the token's own symbol.
+        """
+        return self.info.user_fills_by_time(self.user_address, start_time_ms)
+
     def get_open_orders(self) -> list[dict]:
         return self.info.open_orders(self.vault_address)
 

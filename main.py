@@ -241,22 +241,30 @@ async def _render_chart(
 
 
 async def _render_spot_chart(client: HyperliquidClient, token_name: str) -> bytes | None:
-    """Plain candlestick+volume chart (render_candles, no order/fill overlay)
-    for a spot token's USDC market - same look as every other chart in this
-    bot, just without the vault-position context those have, since this
-    isn't about a position the vault holds. Spot markets aren't addressable
-    by the token's own symbol in candleSnapshot, only by their internal pair
-    name (get_spot_pair_name), which is why this can't just reuse
-    _render_chart directly - that ties one `coin` to both the candle-fetch
-    identifier and the chart's title, which don't match here ("@107" vs
-    "HYPE").
+    """Candlestick+volume chart (render_candles) for a spot token's USDC
+    market, with this depositor's own spot buy fills overlaid as triangles -
+    same look as every other chart in this bot, just without the resting
+    order lines/entry-price line those have, since this isn't about a
+    position the vault holds - it's the user's own spot account. Spot
+    markets aren't addressable by the token's own symbol in candleSnapshot,
+    only by their internal pair name (get_spot_pair_name), which is why this
+    can't just reuse _render_chart directly - that ties one `coin` to both
+    the candle-fetch identifier and the chart's title, which don't match
+    here ("@107" vs "HYPE"); it also always sources fills from the vault
+    (get_fills_since), whereas this needs the user's own account
+    (get_user_fills_since) - a spot buy here is this depositor's personal
+    DCA, unrelated to the vault the rest of the bot watches.
     """
     try:
         pair_name = client.get_spot_pair_name(token_name)
         if not pair_name:
             return None
         candles = client.get_candles(pair_name, CHART_INTERVAL, CHART_LOOKBACK_MS)
-        return render_candles(candles, token_name, CHART_INTERVAL)
+        recent_fills = client.get_user_fills_since(int(time.time() * 1000) - CHART_LOOKBACK_MS)
+        buy_fills = [
+            f for f in recent_fills if f.get("coin") == pair_name and f.get("side") == "B"
+        ]
+        return render_candles(candles, token_name, CHART_INTERVAL, buy_fills)
     except Exception as exc:
         log.warning("Spot chart render failed for %s: %s", token_name, exc)
         return None
