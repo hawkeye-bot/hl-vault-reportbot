@@ -409,10 +409,12 @@ def format_account_summary(
     vault the rest of the bot watches, net value in Hyperliquid's lending
     ("Earn") product, non-dust spot balances (just their $ value, one row
     per coin), then PnL per period (day/week/month/allTime - no volume,
-    that's not the point here). `portfolio` is the raw list of (period,
-    data) tuples from HyperliquidClient.get_portfolio. Only the combined
-    (spot+perp+vault) periods are shown - the "perpX" variants are skipped
-    since this account trades through a vault rather than directly on its
+    that's not the point here - with the all-time PnL's EUR equivalent
+    shown just below it, same `eur_rate` treatment as account equity).
+    `portfolio` is the raw list of (period, data) tuples from
+    HyperliquidClient.get_portfolio. Only the combined (spot+perp+vault)
+    periods are shown - the "perpX" variants are skipped since this account
+    trades through a vault rather than directly on its
     own perp book, so they'd read as ~$0 and just be noise.
     """
     periods = {period: data for period, data in portfolio}
@@ -494,6 +496,11 @@ def format_account_summary(
         pct_str = f" ({pnl / start_value * 100:+.2f}%)" if start_value > 1e-9 else ""
         sign = "+" if pnl >= 0 else "-"
         grid_rows.append([label, f"{sign}${abs(pnl):,.2f}{pct_str}"])
+        # All-time PnL also gets its EUR equivalent right below, as an
+        # unlabeled row - same treatment as Account equity's EUR row above.
+        if key == "allTime" and eur_rate is not None:
+            eur_sign = "+" if pnl >= 0 else "-"
+            grid_rows.append(["", f"{eur_sign}€{abs(pnl) * eur_rate:,.2f}"])
     grid = format_grid(["Period", "PnL"], grid_rows) if grid_rows else ""
 
     return "\n\n".join(part for part in (header, grid) if part)
