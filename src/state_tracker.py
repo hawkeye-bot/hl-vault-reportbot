@@ -58,11 +58,20 @@ def format_table(rows: list[tuple[str, str]], section_breaks: set[int] | None = 
     return f"<pre>{chr(10).join(lines)}</pre>"
 
 
-def format_grid(headers: list[str], rows: list[list[str]]) -> str:
+def format_grid(
+    headers: list[str], rows: list[list[str]], footer: list[str] | None = None
+) -> str:
     """Render a multi-column monospace table with a header row, for listing
-    several items (as opposed to format_table's one label/value per row)."""
+    several items (as opposed to format_table's one label/value per row).
+
+    `footer`, if given, is one extra row (e.g. a totals line) appended after
+    its own separator, so it reads as a summary of the rows above rather
+    than one more item in the list. Column widths account for it too, so it
+    doesn't get clipped or misaligned if it's wider than every data row.
+    """
+    all_rows = rows + ([footer] if footer else [])
     widths = [
-        max(len(headers[i]), *(len(r[i]) for r in rows)) if rows else len(headers[i])
+        max(len(headers[i]), *(len(r[i]) for r in all_rows)) if all_rows else len(headers[i])
         for i in range(len(headers))
     ]
 
@@ -71,6 +80,9 @@ def format_grid(headers: list[str], rows: list[list[str]]) -> str:
 
     lines = [fmt(headers), fmt(["-" * w for w in widths])]
     lines.extend(fmt(r) for r in rows)
+    if footer:
+        lines.append(fmt(["-" * w for w in widths]))
+        lines.append(fmt(footer))
     return f"<pre>{chr(10).join(lines)}</pre>"
 
 
@@ -686,10 +698,15 @@ def format_open_orders(
     disambiguating; that coin's symbol is shown in format_position_status's
     Symbol row instead (see its `pending_entry_coin` param for the flat case).
 
-    Unlike "Exposure" elsewhere (whole-vault notional), "Value" here is
+    No "Side" column - every row here is a buy (sells are shown via
+    format_position_status's "Sell price" row, not repeated here either).
+    "Exposure" is relative to the **whole vault** (`vault_value`), same
+    convention as everywhere else that word is used, while "Value" is
     scaled to this depositor's share (`fraction = equity / vault_value`) -
     what a resting order is actually worth to this user if it fills, not
-    the whole vault's order size.
+    the whole vault's order size. A "Total" footer row sums both across
+    every order, so it's clear what filling the *entire* remaining ladder
+    would mean, not just one rung at a time.
     """
     buy_orders = [o for o in orders if o.get("side") == "B"]
     if not buy_orders:
@@ -699,11 +716,13 @@ def format_open_orders(
     fraction = _fraction(vault_value, equity)
 
     rows = []
+    total_notional = 0.0
     for o in sorted(buy_orders, key=lambda o: float(o.get("limitPx", 0) or 0), reverse=True):
-        action = "Buy (RO)" if o.get("reduceOnly") else "Buy"
         price = float(o.get("limitPx", 0) or 0)
         notional = price * float(o.get("sz", 0) or 0)
-        value_str = f"${notional * fraction:,.2f}" if fraction is not None else "n/a"
+        total_notional += notional
+        exposure_str = f"{notional / vault_value * 100:.2f}%" if vault_value else ""
+        value_str = f"${notional * fraction:,.0f}" if fraction is not None else "n/a"
 
         distance_ref = first_entry_price_by_coin.get(o.get("coin"))
         distance = (
@@ -713,11 +732,16 @@ def format_open_orders(
         number = order_numbers.get(o.get("oid"))
         rows.append(
             [
-                f"#{number}" if number else "",
-                action,
+                str(number) if number else "",
                 f"${_format_price(price)}",
                 value_str,
+                exposure_str,
                 distance,
             ]
         )
-    return format_grid(["#", "Side", "Price", "Value", "Distance"], rows)
+
+    total_exposure_str = f"{total_notional / vault_value * 100:.2f}%" if vault_value else ""
+    total_value_str = f"${total_notional * fraction:,.0f}" if fraction is not None else "n/a"
+    footer = ["", "", total_value_str, total_exposure_str, ""]
+
+    return format_grid(["#", "Price", "Value", "Exp", "Dist."], rows, footer)
