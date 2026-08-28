@@ -2,12 +2,22 @@ import asyncio
 import functools
 import logging
 import os
+import re
 import socket
+import sys
 import time
 
 import requests
-from telegram import ReplyKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, ContextTypes, filters
+from dotenv import find_dotenv, set_key
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from src.config import (
     HEARTBEAT_FAST_INTERVAL_SECONDS,
@@ -52,13 +62,14 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 BOT_KEYBOARD = ReplyKeyboardMarkup(
-    [["/status", "/account"]], resize_keyboard=True, is_persistent=True
+    [["/status", "/account"], ["/config"]], resize_keyboard=True, is_persistent=True
 )
 FIRST_ENTRY_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000  # 30 days
 SELL_COVERAGE_GAP_STREAK_THRESHOLD = 3  # consecutive cycles before warning
 CHART_INTERVAL = "15m"
 CHART_LOOKBACK_MS = 12 * 60 * 60 * 1000  # 12 hours of 15m candles on buy fill charts
 EUR_RATE_TIMEOUT_SECONDS = 10
+_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 
 def _sd_notify(message: str) -> None:
@@ -447,7 +458,106 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(text, parse_mode="HTML", reply_markup=BOT_KEYBOARD)
 
 
-async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state: VaultState) -> None:
+def _is_authorized(update: Update) -> bool:
+    """CallbackQueryHandler and the plain-text reply handler both process
+    every incoming update regardless of chat - unlike CommandHandler, they
+    don't take a `filters=` argument to scope that at registration time -
+    so each callback checks this itself instead, matching every other
+    handler's `filters.Chat(int(TELEGRAM_CHAT_ID))` restriction.
+    """
+    chat = update.effective_chat
+    return chat is not None and chat.id == int(TELEGRAM_CHAT_ID)
+
+
+def _config_menu_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Restart bot", callback_data="config:restart")],
+            [InlineKeyboardButton("Update vault address", callback_data="config:vault")],
+            [InlineKeyboardButton("Update user address", callback_data="config:user")],
+        ]
+    )
+
+
+async def handle_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Entry point for the configuration submenu: an inline keyboard (not
+    the persistent reply keyboard, since these are one-off actions rather
+    than something to keep on hand) offering a restart and updates to the
+    vault/user address being monitored. Both address updates are persisted
+    to .env (set_key, so the rest of the file is left untouched) and take
+    effect by restarting the process - this bot has no in-process path to
+    safely swap the vault/user identity every other piece of state
+    (order_numbers, first_entry_price, the HYPE cost-basis cache, etc.) is
+    keyed to, so a fresh process picking up the new .env values on startup
+    is far simpler and more robust than trying to hot-swap all of that.
+    """
+    await update.message.reply_text(
+        "<b>Configuration</b>",
+        parse_mode="HTML",
+        reply_markup=_config_menu_markup(),
+    )
+
+
+async def handle_config_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if not _is_authorized(update):
+        return
+    state: VaultState = context.bot_data["state"]
+    action = query.data.split(":", 1)[1]
+
+    if action == "restart":
+        await query.edit_message_text("🔄 Restarting bot...")
+        context.bot_data["shutdown_event"].set()
+    elif action in ("vault", "user"):
+        state.pending_config_update = action
+        label = "vault" if action == "vault" else "user"
+        await query.edit_message_text(
+            f"Send the new {label} address (0x...).",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Cancel", callback_data="config:cancel")]]
+            ),
+        )
+    elif action == "cancel":
+        state.pending_config_update = None
+        await query.edit_message_text("Cancelled.")
+
+
+async def handle_config_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catches the plain-text address a user sends after tapping "Update
+    vault/user address" - an ad-hoc pending-flag flow (state.pending_config_update)
+    rather than a full ConversationHandler, since this bot only ever talks
+    to one chat and doesn't need general-purpose multi-step conversation
+    tracking. A no-op whenever nothing is pending, so it doesn't interfere
+    with any other message.
+    """
+    if not _is_authorized(update):
+        return
+    state: VaultState = context.bot_data["state"]
+    pending = state.pending_config_update
+    if not pending:
+        return
+
+    address = (update.message.text or "").strip()
+    if not _ADDRESS_RE.match(address):
+        await update.message.reply_text(
+            "That doesn't look like a valid address (expected 0x followed by 40 hex characters)."
+            " Send it again, or tap Cancel above."
+        )
+        return
+
+    key = "VAULT_ADDRESS" if pending == "vault" else "USER_ADDRESS"
+    set_key(find_dotenv(), key, address)
+    state.pending_config_update = None
+    await update.message.reply_text(
+        f"{key} updated. Restarting bot to apply it...", reply_markup=BOT_KEYBOARD
+    )
+    context.bot_data["shutdown_event"].set()
+
+
+async def poll_loop(
+    client: HyperliquidClient, notifier: TelegramNotifier, state: VaultState, shutdown_event: asyncio.Event
+) -> None:
     last_fill_time_ms = int(time.time() * 1000)
 
     log.info("Starting vault monitor for %s", VAULT_ADDRESS)
@@ -504,7 +614,7 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
     )
     _sd_notify("READY=1")
 
-    while True:
+    while not shutdown_event.is_set():
         try:
             margin = client.get_margin_summary()
             vault_value = _vault_value(margin)
@@ -675,17 +785,32 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
         # (e.g. a wedged network connection) means no kick, so systemd's
         # watchdog eventually force-restarts the process.
         _sd_notify("WATCHDOG=1")
-        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        # Waits for the usual poll interval, but wakes immediately (rather
+        # than finishing out the interval) if /config's restart or an
+        # address update sets shutdown_event, so a requested restart
+        # happens promptly instead of after a possibly-long delay.
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=POLL_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def run() -> None:
     client = HyperliquidClient(VAULT_ADDRESS, USER_ADDRESS)
     notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
     state = VaultState()
+    # Set by the /config "Restart bot" button or a persisted address update
+    # to end poll_loop's while loop and fall through to shutdown below,
+    # after which main() exits non-zero so systemd's Restart=on-failure
+    # starts a fresh process - the only way this bot picks up a changed
+    # VAULT_ADDRESS/USER_ADDRESS, since every piece of in-memory state is
+    # keyed to whichever vault/user the process started with.
+    shutdown_event = asyncio.Event()
 
     application = Application.builder().bot(notifier.bot).build()
     application.bot_data["client"] = client
     application.bot_data["state"] = state
+    application.bot_data["shutdown_event"] = shutdown_event
     application.add_handler(
         CommandHandler(
             "status", handle_status_command, filters=filters.Chat(int(TELEGRAM_CHAT_ID))
@@ -696,12 +821,24 @@ async def run() -> None:
             "account", handle_account_command, filters=filters.Chat(int(TELEGRAM_CHAT_ID))
         )
     )
+    application.add_handler(
+        CommandHandler(
+            "config", handle_config_command, filters=filters.Chat(int(TELEGRAM_CHAT_ID))
+        )
+    )
+    application.add_handler(CallbackQueryHandler(handle_config_callback, pattern=r"^config:"))
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.Chat(int(TELEGRAM_CHAT_ID)),
+            handle_config_reply,
+        )
+    )
 
     await application.initialize()
     await application.start()
     await application.updater.start_polling(drop_pending_updates=True)
     try:
-        await poll_loop(client, notifier, state)
+        await poll_loop(client, notifier, state, shutdown_event)
     finally:
         await application.updater.stop()
         await application.stop()
@@ -710,6 +847,15 @@ async def run() -> None:
 
 def main() -> None:
     asyncio.run(run())
+    # run() only returns (rather than the process being killed/crashing)
+    # when a restart was explicitly requested via /config - exiting
+    # non-zero here is what makes systemd's Restart=on-failure actually
+    # start the next process, picking up whatever changed in .env. Logged
+    # explicitly so this shows up as an intentional restart in journalctl,
+    # not just a bare "exited, status=1/FAILURE" that looks like a crash.
+    log.info("Restart requested via /config - exiting so systemd restarts the process")
+    _sd_notify("STOPPING=1")
+    sys.exit(1)
 
 
 if __name__ == "__main__":

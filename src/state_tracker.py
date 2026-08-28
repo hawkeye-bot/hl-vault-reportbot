@@ -22,6 +22,10 @@ class VaultState:
     hype_spot_position: float = 0.0
     hype_spot_cost_basis: float = 0.0
     hype_spot_synced_until_ms: int = 0
+    # Set by /config's "update vault/user address" button to "vault" or
+    # "user" while awaiting the next plain-text message as the new address
+    # (see main.py's handle_config_reply); None the rest of the time.
+    pending_config_update: str | None = None
 
 
 def _pair(coin: str) -> str:
