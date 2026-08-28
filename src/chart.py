@@ -34,6 +34,62 @@ _CURRENT_PRICE_COLOR = "#f0883e"
 _ENTRY_PRICE_COLOR = "#58a6ff"
 
 
+def _fill_markers(
+    fills: list[dict],
+    df: pd.DataFrame,
+    marker: str,
+    color: str,
+    base_ref: pd.Series,
+    offset_sign: int,
+) -> list:
+    """Build one scatter addplot per stack level for a set of fills, deduped
+    by oid (so an order that filled across several partials still gets just
+    one marker) and matched to their nearest candle. Offsets are sized
+    against the candle range so they land at a sensible height regardless of
+    how far any order lines sit, and multiple fills landing on the same
+    candle stack outward from it (`offset_sign` +1 = upward from High, -1 =
+    downward from Low) rather than overwriting each other.
+    """
+    seen_oids = set()
+    deduped_fills = []
+    for f in fills:
+        oid = f.get("oid")
+        if oid in seen_oids:
+            continue
+        seen_oids.add(oid)
+        deduped_fills.append(f)
+
+    positions = []
+    for f in deduped_fills:
+        ts = pd.to_datetime(int(f.get("time", 0)), unit="ms")
+        pos = df.index.get_indexer([ts], method="nearest")[0]
+        if pos >= 0:
+            positions.append(pos)
+
+    if not positions:
+        return []
+
+    price_range = df["High"].max() - df["Low"].min()
+    base_offset = price_range * 0.045
+    stack_gap = price_range * 0.09
+
+    fills_seen_at: dict[int, int] = {}
+    stack_series: list[pd.Series] = []
+    for pos in positions:
+        level = fills_seen_at.get(pos, 0)
+        fills_seen_at[pos] = level + 1
+        while level >= len(stack_series):
+            stack_series.append(pd.Series(float("nan"), index=df.index))
+        stack_series[level].iloc[pos] = base_ref.iloc[pos] + offset_sign * (
+            base_offset + level * stack_gap
+        )
+
+    return [
+        mpf.make_addplot(series, type="scatter", markersize=45, marker=marker, color=color)
+        for series in stack_series
+    ]
+
+
 def render_candles(
     candles: list[dict],
     coin: str,
@@ -42,21 +98,26 @@ def render_candles(
     open_buy_prices: dict[int, float] | None = None,
     open_sell_prices: list[float] | None = None,
     entry_price: float | None = None,
+    sell_fills: list[dict] | None = None,
 ) -> bytes:
     """Render candles (as returned by HyperliquidClient.get_candles) to a PNG,
     with optional overlays: `buy_fills` (raw fill dicts within the candle
-    window) as red upside-down triangles above each fill's candle - one
-    per order that filled (deduped by oid, so an order that filled across
-    several partials still gets just one triangle), stacked upward when a
-    candle has more than one order fill - `open_buy_prices` (rung number
-    -> price, from assign_order_numbers) as dashed red lines labeled with
-    the rung, and `open_sell_prices` as dashed green lines labeled "TP" -
-    so the chart shows where the ladder has already bought, where it's
-    still resting, and where it'll take profit, without opening a
-    separate app. The last candle's close is always drawn as a dotted
-    orange "Now" line, and `entry_price` (the position's blended average
-    entry) as a dotted blue "Entry" line - both dotted rather than dashed
-    to stay visually distinct from the order lines.
+    window) as red upside-down triangles above each fill's candle, and
+    `sell_fills` as green right-side-up triangles below each fill's candle -
+    a mirror image of the buy markers (opposite side of the candle, opposite
+    point direction, opposite color) so a trade's entries and exit(s) both
+    show on the same chart. Each is one marker per order that filled
+    (deduped by oid, so an order that filled across several partials still
+    gets just one marker), stacked outward when a candle has more than one
+    fill of that side. `open_buy_prices` (rung number -> price, from
+    assign_order_numbers) draws dashed red lines labeled with the rung, and
+    `open_sell_prices` dashed green lines labeled "TP" - so the chart shows
+    where the ladder has already bought, where it's still resting, and
+    where it'll take profit, without opening a separate app. The last
+    candle's close is always drawn as a dotted orange "Now" line, and
+    `entry_price` (the position's blended average entry) as a dotted blue
+    "Entry" line - both dotted rather than dashed to stay visually distinct
+    from the order lines.
     """
     df = pd.DataFrame(
         [
@@ -74,56 +135,9 @@ def render_candles(
 
     addplots = []
     if buy_fills:
-        # One triangle per resting order that filled, not per partial fill
-        # of it - several partials of the same order (same oid) collapse
-        # to a single representative fill before anything else happens.
-        seen_oids = set()
-        deduped_fills = []
-        for f in buy_fills:
-            oid = f.get("oid")
-            if oid in seen_oids:
-                continue
-            seen_oids.add(oid)
-            deduped_fills.append(f)
-
-        # Marked with an upside-down triangle above the candle's high (not
-        # at the exact fill price, and not overlapping the candle) so it
-        # reads as a "bought here" flag pointing down at the candle. Two or
-        # more orders filling in the same candle stack their triangles
-        # upward rather than overwriting each other.
-        positions = []
-        for f in deduped_fills:
-            ts = pd.to_datetime(int(f.get("time", 0)), unit="ms")
-            pos = df.index.get_indexer([ts], method="nearest")[0]
-            if pos >= 0:
-                positions.append(pos)
-
-        if positions:
-            # Sized against the candle range itself (what's actually
-            # visible - the y-axis is capped to this below, regardless of
-            # how far any order lines sit) rather than the full range
-            # including order lines, so stacked triangles land at a
-            # sensible height instead of towering off past the capped
-            # view.
-            price_range = df["High"].max() - df["Low"].min()
-            base_offset = price_range * 0.045
-            stack_gap = price_range * 0.09
-
-            fills_seen_at: dict[int, int] = {}
-            stack_series: list[pd.Series] = []
-            for pos in positions:
-                level = fills_seen_at.get(pos, 0)
-                fills_seen_at[pos] = level + 1
-                while level >= len(stack_series):
-                    stack_series.append(pd.Series(float("nan"), index=df.index))
-                stack_series[level].iloc[pos] = df["High"].iloc[pos] + base_offset + level * stack_gap
-
-            for series in stack_series:
-                addplots.append(
-                    mpf.make_addplot(
-                        series, type="scatter", markersize=45, marker="v", color=_BUY_COLOR
-                    )
-                )
+        addplots += _fill_markers(buy_fills, df, "v", _BUY_COLOR, df["High"], 1)
+    if sell_fills:
+        addplots += _fill_markers(sell_fills, df, "^", _SELL_COLOR, df["Low"], -1)
 
     hlines_prices: list[float] = []
     hlines_colors: list[str] = []

@@ -15,6 +15,13 @@ class VaultState:
     order_numbers: dict[int, int] = field(default_factory=dict)
     single_buy_order_since: dict[str, float] = field(default_factory=dict)
     unstuck_episode_fills: dict[str, list[list[dict]]] = field(default_factory=dict)
+    # Running weighted-average-cost accumulator for the user's own HYPE spot
+    # holding (see update_cost_basis) - cached in-process across /account
+    # calls rather than replaying this depositor's full fill history every
+    # time, since that history only grows over time.
+    hype_spot_position: float = 0.0
+    hype_spot_cost_basis: float = 0.0
+    hype_spot_synced_until_ms: int = 0
 
 
 def _pair(coin: str) -> str:
@@ -129,6 +136,36 @@ def fills_since_position_opened(fills: list[dict], coin: str) -> list[dict]:
         if f.get("side") == "B" and float(f.get("startPosition", 0) or 0) == 0
     ]
     return coin_fills[open_indices[-1] :] if open_indices else coin_fills
+
+
+def update_cost_basis(
+    position: float, cost_basis: float, fills: list[dict]
+) -> tuple[float, float]:
+    """Apply `fills` (any order - sorted here by time) to a running
+    weighted-average-cost accumulator: a buy adds to both position and cost
+    basis; a sell removes proportionally from cost basis (weighted-average
+    method - a sell doesn't change the average cost of what's left, it just
+    scales both down together) and, if it empties the position, resets cost
+    basis to 0 so the next buy starts a fresh average instead of carrying
+    over floating-point dust. Designed to be called incrementally (only
+    new fills since the last call) so a growing fill history doesn't have
+    to be replayed from scratch every time - see VaultState's
+    hype_spot_* fields and main.py's _update_hype_avg_buy_price.
+    """
+    for f in sorted(fills, key=lambda f: f.get("time", 0)):
+        sz = float(f.get("sz", 0) or 0)
+        px = float(f.get("px", 0) or 0)
+        if f.get("side") == "B":
+            position += sz
+            cost_basis += sz * px
+        else:
+            if position > 0:
+                cost_basis -= cost_basis * min(sz / position, 1.0)
+            position -= sz
+            if position <= 1e-9:
+                position = 0.0
+                cost_basis = 0.0
+    return position, cost_basis
 
 
 def historical_order_sizes(fills: list[dict], coin: str) -> list[float]:
@@ -401,11 +438,13 @@ def format_account_summary(
     vault_all_time_pnl: float | None = None,
     btc_price: float | None = None,
     eur_rate: float | None = None,
+    hype_avg_buy_price: float | None = None,
 ) -> str:
     """Render an account-wide summary: current account equity (plus its EUR
     equivalent just below, if `eur_rate` is available), amount staked (in
-    HYPE, its equity, then HYPE's current price and BTC's current price just
-    below), this depositor's equity and cumulative all-time profit in the
+    HYPE, its equity, then HYPE's current price, this depositor's average
+    HYPE spot buy price, and BTC's current price below), this depositor's
+    equity and cumulative all-time profit in the
     vault the rest of the bot watches, net value in Hyperliquid's lending
     ("Earn") product, non-dust spot balances (just their $ value, one row
     per coin), then PnL per period (day/week/month/allTime - no volume,
@@ -441,6 +480,8 @@ def format_account_summary(
         staking_rows.append(("Staked equity", f"${staked_value:,.2f}"))
     if hype_price is not None:
         staking_rows.append(("HYPE price", f"${_format_price(hype_price)}"))
+    if hype_avg_buy_price is not None:
+        staking_rows.append(("HYPE avg buy", f"${_format_price(hype_avg_buy_price)}"))
     if btc_price is not None:
         staking_rows.append(("BTC price", f"${_format_price(btc_price)}"))
 
@@ -751,4 +792,4 @@ def format_open_orders(
     total_value_str = f"${total_notional * fraction:,.0f}" if fraction is not None else "n/a"
     footer = ["", "", total_value_str, total_exposure_str, ""]
 
-    return format_grid(["#", "Price", "Value", "Exp", "Dist."], rows, footer)
+    return format_grid(["#", "Price", "Val", "Exp", "Dist."], rows, footer)

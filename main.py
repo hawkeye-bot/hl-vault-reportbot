@@ -42,6 +42,7 @@ from src.state_tracker import (
     is_loss_realizing_sell,
     needs_fresh_numbering,
     position_after_fills,
+    update_cost_basis,
 )
 
 logging.basicConfig(
@@ -199,19 +200,20 @@ async def _render_chart(
     order_numbers: dict[int, int],
     entry_price_by_coin: dict[str, float] | None = None,
 ) -> bytes | None:
-    """Chart for `coin` with fills, resting buy rungs, resting sell(s), and
-    the position's entry price overlaid - see render_candles. Buy fills
-    are limited to the chart's own lookback window, matching what's
+    """Chart for `coin` with fills (both sides), resting buy rungs, resting
+    sell(s), and the position's entry price overlaid - see render_candles.
+    Fills are limited to the chart's own lookback window, matching what's
     actually visible on it - and further scoped to the position that's
     still open (fills_since_position_opened), since a coin can close and
     reopen more than once within that window and only the fills from the
-    current, still-open cycle should get a "bought here" marker.
+    current, still-open cycle should get a marker.
     """
     try:
         candles = client.get_candles(coin, CHART_INTERVAL, CHART_LOOKBACK_MS)
         recent_fills = client.get_fills_since(int(time.time() * 1000) - CHART_LOOKBACK_MS)
         current_cycle_fills = fills_since_position_opened(recent_fills, coin)
         buy_fills = [f for f in current_cycle_fills if f.get("side") == "B"]
+        sell_fills = [f for f in current_cycle_fills if f.get("side") == "A"]
         open_buy_prices = {
             order_numbers[o.get("oid")]: float(o.get("limitPx", 0) or 0)
             for o in orders
@@ -225,7 +227,10 @@ async def _render_chart(
             for o in orders
             if o.get("coin") == coin and o.get("side") == "A"
         ]
-        entry_price = (entry_price_by_coin or {}).get(coin)
+        # A sell fill that just closed the position out can leave a stale
+        # zero-size entry in `entry_price_by_coin` (entryPx reads 0 once
+        # flat) - skip drawing an "Entry" line at $0 in that case.
+        entry_price = (entry_price_by_coin or {}).get(coin) or None
         return render_candles(
             candles,
             coin,
@@ -234,6 +239,7 @@ async def _render_chart(
             open_buy_prices,
             open_sell_prices,
             entry_price,
+            sell_fills,
         )
     except Exception as exc:
         log.warning("Chart render failed for %s: %s", coin, exc)
@@ -364,18 +370,36 @@ def _usd_to_eur_rate() -> float | None:
         return None
 
 
+def _update_hype_avg_buy_price(client: HyperliquidClient, state: VaultState, pair_name: str) -> None:
+    """Keep state.hype_spot_position/hype_spot_cost_basis current by
+    applying only the fills since the last call (hype_spot_synced_until_ms)
+    to update_cost_basis - this depositor's full HYPE spot history only
+    grows over time, so this avoids re-fetching and replaying all of it on
+    every /account call. The first call ever (synced_until_ms starts at 0)
+    does fetch the whole history once, to seed the running total.
+    """
+    new_fills = client.get_user_fills_since(state.hype_spot_synced_until_ms)
+    hype_fills = [f for f in new_fills if f.get("coin") == pair_name]
+    state.hype_spot_position, state.hype_spot_cost_basis = update_cost_basis(
+        state.hype_spot_position, state.hype_spot_cost_basis, hype_fills
+    )
+    state.hype_spot_synced_until_ms = int(time.time() * 1000)
+
+
 async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Account-wide summary (spot + perp + every vault this address is in),
     not scoped to the one vault the rest of this bot watches: account
-    equity (plus its EUR equivalent), HYPE staked (its equity and current
-    price) and BTC's current price, this depositor's equity and all-time
-    profit in the watched vault, net Hyperliquid "Earn" (lending) value,
-    non-dust spot balances (each just their $ value), and PnL per period -
-    plus a HYPE/USDC spot chart attached as the message's photo, text above
-    per the same convention /status and the heartbeat use (unlike a buy
-    fill's chart, this isn't the point of the message, just context).
+    equity (plus its EUR equivalent), HYPE staked (its equity, current
+    price, and this depositor's average spot buy price) and BTC's current
+    price, this depositor's equity and all-time profit in the watched
+    vault, net Hyperliquid "Earn" (lending) value, non-dust spot balances
+    (each just their $ value), and PnL per period - plus a HYPE/USDC spot
+    chart attached as the message's photo, text above per the same
+    convention /status and the heartbeat use (unlike a buy fill's chart,
+    this isn't the point of the message, just context).
     """
     client: HyperliquidClient = context.bot_data["client"]
+    state: VaultState = context.bot_data["state"]
     portfolio = client.get_portfolio()
     staked_hype = float(client.get_staking_summary().get("delegated", 0) or 0)
     mid_prices = client.get_mid_prices()
@@ -387,6 +411,14 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
     vault_all_time_pnl = _vault_all_time_pnl(vault_details)
     earn_value = client.get_earn_value()
     eur_rate = _usd_to_eur_rate()
+    hype_pair_name = client.get_spot_pair_name("HYPE")
+    if hype_pair_name:
+        _update_hype_avg_buy_price(client, state, hype_pair_name)
+    hype_avg_buy_price = (
+        state.hype_spot_cost_basis / state.hype_spot_position
+        if state.hype_spot_position > 0
+        else None
+    )
     summary = format_account_summary(
         portfolio,
         staked_hype,
@@ -399,6 +431,7 @@ async def handle_account_command(update: Update, context: ContextTypes.DEFAULT_T
         vault_all_time_pnl=vault_all_time_pnl,
         btc_price=btc_price,
         eur_rate=eur_rate,
+        hype_avg_buy_price=hype_avg_buy_price,
     )
     text = f"<b>Account</b>\n{summary}"
     chart = await _render_spot_chart(client, "HYPE")
@@ -558,13 +591,13 @@ async def poll_loop(client: HyperliquidClient, notifier: TelegramNotifier, state
                     )
 
                 # A chart gives a feel for what the market's been doing
-                # without opening a separate app - only worth it for buys,
-                # since that's what a DCA ladder filling is really about
-                chart = None
-                if group[0].get("side") == "B":
-                    chart = await _render_chart(
-                        client, coin, orders, state.order_numbers, entry_price_by_coin
-                    )
+                # without opening a separate app, for both sides now - a
+                # sell fill's chart still shows the position's earlier buy
+                # fills (scoped to this cycle), so it reads as the trade's
+                # full buy-and-sell history, not just this one exit.
+                chart = await _render_chart(
+                    client, coin, orders, state.order_numbers, entry_price_by_coin
+                )
 
                 log.info("Fill: %s", msg)
                 if chart:
