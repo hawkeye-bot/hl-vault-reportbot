@@ -723,7 +723,7 @@ async def poll_loop(
 
                 log.info("Fill: %s", msg)
                 if chart:
-                    await notifier.send_photo(chart, caption=msg, force=True)
+                    await notifier.send_photo(chart, caption=msg, force=True, caption_above=True)
                 else:
                     await notifier.send(msg, force=True)
 
