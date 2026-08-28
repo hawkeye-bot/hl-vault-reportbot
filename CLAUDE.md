@@ -76,6 +76,8 @@ A buy fill message also gets the same "Open orders" table shown in `/status`/hea
 
 `format_position_status` also takes `sell_price_by_coin` (built by `main.py`'s `_sell_price_by_coin`, the nearest-to-market resting sell price per coin) and shows it as "Sell price", ordered highest-to-lowest price: Sell price, Current price, Entry price.
 
+Every `format_position_status` table (including the flat fallback) leads with "Total vault equity" - `vault_value` itself, the whole vault's total value pooling every follower's capital, distinct from "Equity" right below it (this depositor's own scaled share) and from `/account`'s same-named "Vault equity" row (also this depositor's share, just fetched a different way - see `_user_equity`). It repeats in each per-coin table the same way "Equity" already does whenever there's more than one open position at once, rather than being hoisted out as a one-time header.
+
 ### Loss-realizing sell detection
 
 This vault runs [passivbot](https://github.com/enarjord/passivbot), whose ordinary closes only ever trigger above a profit threshold - so any sell fill with negative `closedPnl` is never a normal take-profit; it's most likely passivbot's auto-unstuck mechanism cutting an over-extended position. `format_fill` flags this in the header ("Sell order filled (loss)" vs the normal "Sell order filled").

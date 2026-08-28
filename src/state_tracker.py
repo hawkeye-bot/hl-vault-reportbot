@@ -565,6 +565,13 @@ def format_position_status(
     cost accumulator (positive = paid), the opposite of PnL's sign
     convention, so it's negated here to display like PnL (positive = gained).
 
+    The first row, "Total vault equity", is `vault_value` itself (the whole
+    vault's total value, pooling every follower's capital) - not to be
+    confused with "Equity" right below it, which is just this depositor's
+    own scaled share. Not the same figure as /account's "Vault equity"
+    either, which is also this depositor's share (see main.py's
+    _user_equity) rather than the vault total shown here.
+
     With no open position at all, the flat fallback below normally leaves
     Symbol blank - but a coin can be flat and still have a single resting
     re-entry order on the exchange (passivbot places one the moment a
@@ -587,6 +594,8 @@ def format_position_status(
         value_str = f"${notional * fraction:,.2f}" if fraction is not None else "n/a"
 
         rows = []
+        if vault_value is not None:
+            rows.append(("Total vault equity", f"${vault_value:,.2f}"))
         if fraction is not None:
             pnl = float(pos.get("unrealizedPnl", 0) or 0) * fraction
             sign = "+" if pnl >= 0 else "-"
@@ -616,6 +625,8 @@ def format_position_status(
         return "\n\n".join(tables)
 
     rows = []
+    if vault_value is not None:
+        rows.append(("Total vault equity", f"${vault_value:,.2f}"))
     if fraction is not None:
         rows.append(("PnL", "$0.00 (0.00%)"))
     if equity is not None:
