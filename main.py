@@ -473,7 +473,9 @@ def _config_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Restart bot", callback_data="config:restart")],
+            [InlineKeyboardButton("Show vault address", callback_data="config:show_vault")],
             [InlineKeyboardButton("Update vault address", callback_data="config:vault")],
+            [InlineKeyboardButton("Show user address", callback_data="config:show_user")],
             [InlineKeyboardButton("Update user address", callback_data="config:user")],
         ]
     )
@@ -482,11 +484,13 @@ def _config_menu_markup() -> InlineKeyboardMarkup:
 async def handle_config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Entry point for the configuration submenu: an inline keyboard (not
     the persistent reply keyboard, since these are one-off actions rather
-    than something to keep on hand) offering a restart and updates to the
-    vault/user address being monitored. Both address updates are persisted
-    to .env (set_key, so the rest of the file is left untouched) and take
-    effect by restarting the process - this bot has no in-process path to
-    safely swap the vault/user identity every other piece of state
+    than something to keep on hand) offering a restart, read-only lookups
+    of the vault/user address currently being monitored (just the live
+    VAULT_ADDRESS/USER_ADDRESS constants - no restart needed, nothing to
+    persist), and updates to either address. Both address updates are
+    persisted to .env (set_key, so the rest of the file is left untouched)
+    and take effect by restarting the process - this bot has no in-process
+    path to safely swap the vault/user identity every other piece of state
     (order_numbers, first_entry_price, the HYPE cost-basis cache, etc.) is
     keyed to, so a fresh process picking up the new .env values on startup
     is far simpler and more robust than trying to hot-swap all of that.
@@ -509,6 +513,14 @@ async def handle_config_callback(update: Update, context: ContextTypes.DEFAULT_T
     if action == "restart":
         await query.edit_message_text("🔄 Restarting bot...")
         context.bot_data["shutdown_event"].set()
+    elif action in ("show_vault", "show_user"):
+        label = "Vault" if action == "show_vault" else "User"
+        address = VAULT_ADDRESS if action == "show_vault" else USER_ADDRESS
+        await query.edit_message_text(
+            f"{label} monitored:\n<code>{address}</code>",
+            parse_mode="HTML",
+            reply_markup=_config_menu_markup(),
+        )
     elif action in ("vault", "user"):
         state.pending_config_update = action
         label = "vault" if action == "vault" else "user"
