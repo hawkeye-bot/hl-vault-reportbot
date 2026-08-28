@@ -565,12 +565,13 @@ def format_position_status(
     cost accumulator (positive = paid), the opposite of PnL's sign
     convention, so it's negated here to display like PnL (positive = gained).
 
-    The first row, "Total vault equity", is `vault_value` itself (the whole
-    vault's total value, pooling every follower's capital) - not to be
-    confused with "Equity" right below it, which is just this depositor's
-    own scaled share. Not the same figure as /account's "Vault equity"
-    either, which is also this depositor's share (see main.py's
-    _user_equity) rather than the vault total shown here.
+    "Vault equity" (right below Exposure) is `vault_value` itself (the
+    whole vault's total value, pooling every follower's capital) - not to
+    be confused with "Equity" above it, which is just this depositor's own
+    scaled share. Confusingly, /account has its own "Vault equity" row
+    that's a *different* figure - this depositor's share (see main.py's
+    _user_equity), not the vault total shown here - the same label means
+    something different depending on which message it's in.
 
     With no open position at all, the flat fallback below normally leaves
     Symbol blank - but a coin can be flat and still have a single resting
@@ -594,8 +595,6 @@ def format_position_status(
         value_str = f"${notional * fraction:,.2f}" if fraction is not None else "n/a"
 
         rows = []
-        if vault_value is not None:
-            rows.append(("Total vault equity", f"${vault_value:,.2f}"))
         if fraction is not None:
             pnl = float(pos.get("unrealizedPnl", 0) or 0) * fraction
             sign = "+" if pnl >= 0 else "-"
@@ -604,6 +603,8 @@ def format_position_status(
         if equity is not None:
             rows.append(("Equity", f"${equity:,.2f}"))
         rows.append(("Exposure", f"{value_str}{exposure_pct}"))
+        if vault_value is not None:
+            rows.append(("Vault equity", f"${vault_value:,.2f}"))
         if fraction is not None:
             funding = -float((pos.get("cumFunding") or {}).get("sinceOpen", 0) or 0) * fraction
             funding_sign = "+" if funding >= 0 else "-"
@@ -625,13 +626,13 @@ def format_position_status(
         return "\n\n".join(tables)
 
     rows = []
-    if vault_value is not None:
-        rows.append(("Total vault equity", f"${vault_value:,.2f}"))
     if fraction is not None:
         rows.append(("PnL", "$0.00 (0.00%)"))
     if equity is not None:
         rows.append(("Equity", f"${equity:,.2f}"))
     rows.append(("Exposure", "$0.00 (0.00%)" if vault_value else "$0.00"))
+    if vault_value is not None:
+        rows.append(("Vault equity", f"${vault_value:,.2f}"))
     if fraction is not None:
         rows.append(("Funding", "$0.00 (0.00%)"))
     rows.append(("Symbol", _pair(pending_entry_coin) if pending_entry_coin else ""))
